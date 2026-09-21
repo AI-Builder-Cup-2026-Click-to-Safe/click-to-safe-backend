@@ -8,6 +8,9 @@ on:
         type: string
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
   diagnose:
     if: github.ref == 'refs/heads/main'
@@ -32,7 +35,15 @@ jobs:
           curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer $(gcloud auth print-access-token)" \
             "https://${GCP_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT_ID}/locations/${GCP_REGION}/reasoningEngines/${ENGINE_ID}" \
-            | jq '{name, displayName, createTime, updateTime, contextSpec, spec: {containerSpec: .spec.containerSpec, serviceAccount: .spec.serviceAccount, deploymentSpec: (.spec.deploymentSpec | del(.env, .secretEnv))}}'
+            | jq '{error, name, displayName, createTime, updateTime, contextSpec, spec: {containerSpec: .spec.containerSpec, serviceAccount: .spec.serviceAccount, deploymentSpec: (.spec.deploymentSpec | del(.env, .secretEnv))}}'
+      - name: Inspect deployment operations
+        if: always()
+        run: |
+          [[ "$ENGINE_ID" =~ ^[0-9]+$ ]]
+          curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+            "https://${GCP_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT_ID}/locations/${GCP_REGION}/reasoningEngines/${ENGINE_ID}/operations" \
+            | jq '{error, operations: [.operations[]? | {name,done,error,metadata}]}'
       - name: Inspect runtime logs
         if: always()
         run: |
