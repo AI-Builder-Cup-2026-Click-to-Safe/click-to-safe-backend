@@ -119,7 +119,7 @@ curl --fail-with-body --max-time 300 -X POST "$BASE_URL/v1/analyze" \
 uv sync --frozen
 uv run ruff check .
 uv run pytest
-export GOOGLE_CLOUD_PROJECT=aitech-good-s27493
+export APP_PROJECT_ID=aitech-good-s27493
 export VIDEO_BUCKET=aitech-good-s27493-prototype-videos
 export MODEL=gemini-3.1-flash-lite
 export MODEL_REGION=global
