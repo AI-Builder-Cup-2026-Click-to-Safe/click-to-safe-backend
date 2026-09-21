@@ -62,6 +62,8 @@ Gemini 사용과 전용 영상 버킷의 객체 생성/읽기만 수행합니다
 - Terraform 상태는 `${PROJECT_ID}-prototype-tfstate`의 `prototype/foundation`, `prototype/agent`에
   별도로 저장합니다. 버전 관리와 GCS 상태 잠금이 적용되며 apply 실행은 서로 겹치지 않습니다.
 - Docker context는 앱 코드와 의존성 파일만 허용해 인증 JSON이 이미지에 들어가지 않도록 합니다.
+- 배포 이미지는 단일 `linux/amd64` manifest로 push하고, 저장소에서 동일 digest를 내려받아 실행을 검증합니다.
+  Agent Runtime에서 시작 실패를 일으킨 attestation index를 피하기 위해 build provenance는 비활성화합니다.
 - Artifact Registry: `prototype-agents`, 영상 버킷: `${PROJECT_ID}-prototype-videos`.
 - 런타임은 최소 0개, 최대 2개 인스턴스, 인스턴스당 CPU 1개/메모리 1 GiB입니다.
   유휴 시 scale-to-zero하며 첫 요청에는 콜드 스타트가 있을 수 있습니다.
