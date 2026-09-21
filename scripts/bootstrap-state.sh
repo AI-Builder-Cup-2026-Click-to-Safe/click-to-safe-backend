@@ -5,7 +5,9 @@ set -euo pipefail
 : "${GCP_REGION:=us-central1}"
 : "${TF_STATE_BUCKET:=${GCP_PROJECT_ID}-prototype-tfstate}"
 
+# Terraform reads project metadata during plan, before its API resources can be applied.
 gcloud services enable serviceusage.googleapis.com storage.googleapis.com \
+  cloudresourcemanager.googleapis.com \
   --project="$GCP_PROJECT_ID" --quiet
 
 # A list error must fail instead of being mistaken for an absent bucket.
