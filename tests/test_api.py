@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -34,6 +35,28 @@ def test_health_without_cloud_credentials(client):
     assert client.post("/api/reasoning_engine", json={"class_method": "health"}).json() == {
         "output": {"status": "ok"}
     }
+
+
+@pytest.mark.parametrize("content_type", ["application/octet-stream", "text/plain"])
+def test_runtime_proxy_json_without_json_content_type(client, content_type):
+    response = client.post(
+        "/api/reasoning_engine",
+        content=json.dumps({"class_method": "health", "input": {}}),
+        headers={"Content-Type": content_type},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"output": {"status": "ok"}}
+
+
+def test_runtime_proxy_string_envelope(client):
+    response = client.post(
+        "/api/reasoning_engine", json=json.dumps({"class_method": "health", "input": {}})
+    )
+    assert response.status_code == 200
+
+
+def test_runtime_proxy_rejects_malformed_json(client):
+    assert client.post("/api/reasoning_engine", content="not-json").status_code == 422
 
 
 def test_upload_session_is_single_object_and_size_bound(client, cloud):

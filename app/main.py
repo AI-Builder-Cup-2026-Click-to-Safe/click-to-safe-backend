@@ -9,7 +9,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from google import genai
 from google.api_core.exceptions import NotFound
@@ -167,8 +167,21 @@ def analysis_input(body: Invocation):
         raise HTTPException(422, "input requires video_uri, optional mime_type and prompt") from exc
 
 
+async def runtime_invocation(request: Request) -> Invocation:
+    # The managed :query proxy can forward JSON bytes without application/json.
+    # Read JSON explicitly, as in Google's BYOC wrapper, then validate the envelope.
+    try:
+        payload = await request.json()
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return Invocation.model_validate(payload)
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(422, "Expected a JSON invocation with class_method and input") from exc
+
+
 @app.post("/api/reasoning_engine")
-async def query(body: Invocation):
+async def query(request: Request):
+    body = await runtime_invocation(request)
     if body.class_method == "health":
         return {"output": health()}
     if body.class_method not in {"query", "analyze_video"}:
@@ -177,7 +190,8 @@ async def query(body: Invocation):
 
 
 @app.post("/api/stream_reasoning_engine")
-async def stream_query(body: Invocation):
+async def stream_query(request: Request):
+    body = await runtime_invocation(request)
     if body.class_method != "stream_query":
         raise HTTPException(400, "Unsupported streaming class_method")
     # Validate and finish before sending headers so upstream failures retain their HTTP status.
