@@ -59,10 +59,10 @@ resource "google_vertex_ai_reasoning_engine" "video_agent" {
       }
       dynamic "env" {
         for_each = {
-          GOOGLE_CLOUD_PROJECT = var.project_id
-          MODEL                = var.model
-          MODEL_REGION         = var.model_region
-          VIDEO_BUCKET         = var.video_bucket
+          APP_PROJECT_ID = var.project_id
+          MODEL          = var.model
+          MODEL_REGION   = var.model_region
+          VIDEO_BUCKET   = var.video_bucket
         }
         content {
           name  = env.key

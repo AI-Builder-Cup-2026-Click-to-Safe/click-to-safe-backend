@@ -48,14 +48,14 @@ class Invocation(BaseModel):
 
 @lru_cache
 def storage_client():
-    return storage.Client(project=os.environ["GOOGLE_CLOUD_PROJECT"])
+    return storage.Client(project=os.environ["APP_PROJECT_ID"])
 
 
 @lru_cache
 def model_client():
     return genai.Client(
         vertexai=True,
-        project=os.environ["GOOGLE_CLOUD_PROJECT"],
+        project=os.environ["APP_PROJECT_ID"],
         location=os.getenv("MODEL_REGION", "global"),
         http_options=types.HttpOptions(api_version="v1", timeout=240_000),
     )
