@@ -1,0 +1,124 @@
+name: Deploy Agent Runtime
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never interrupt Terraform apply; GCS also provides a remote state lock.
+concurrency:
+  group: prototype-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  configuration:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - name: Check deployment secret
+        id: check
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [[ -z "$GCP_SA_KEY" ]]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo '::notice::Deployment pending: add the GCP_SA_KEY repository secret and run this workflow again.'
+            echo '### Deployment pending' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Add the service-account JSON as **GCP_SA_KEY**, then use **Run workflow** on main.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: [ci, configuration]
+    if: needs.configuration.outputs.ready == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'aitech-good-s27493' }}
+      GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.1-flash-lite' }}
+      MODEL_REGION: ${{ vars.GEMINI_MODEL_REGION || 'global' }}
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: '1.16.3'
+          terraform_wrapper: false
+      - name: Configure deployment inputs
+        run: |
+          {
+            echo "TF_VAR_project_id=$GCP_PROJECT_ID"
+            echo "TF_VAR_region=$GCP_REGION"
+            echo "TF_STATE_BUCKET=${GCP_PROJECT_ID}-prototype-tfstate"
+          } >> "$GITHUB_ENV"
+      - name: Initialize versioned Terraform state storage
+        run: bash scripts/bootstrap-state.sh
+      - name: Provision APIs, registry, runtime identity and video storage
+        id: foundation
+        run: |
+          terraform -chdir=terraform/foundation init -lockfile=readonly \
+            -backend-config="bucket=$TF_STATE_BUCKET" -backend-config='prefix=prototype/foundation'
+          terraform -chdir=terraform/foundation plan -lock-timeout=5m -out=foundation.tfplan
+          terraform -chdir=terraform/foundation apply -lock-timeout=5m foundation.tfplan
+          echo "image_repository=$(terraform -chdir=terraform/foundation output -raw image_repository)" >> "$GITHUB_OUTPUT"
+          echo "TF_VAR_runtime_service_account=$(terraform -chdir=terraform/foundation output -raw runtime_service_account)" >> "$GITHUB_ENV"
+          echo "TF_VAR_video_bucket=$(terraform -chdir=terraform/foundation output -raw video_bucket)" >> "$GITHUB_ENV"
+      - name: Authenticate Docker
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and push immutable release
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.foundation.outputs.image_repository }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Deploy Agent Runtime
+        env:
+          TF_VAR_image_uri: ${{ steps.foundation.outputs.image_repository }}@${{ steps.image.outputs.digest }}
+          TF_VAR_model: ${{ env.MODEL }}
+          TF_VAR_model_region: ${{ env.MODEL_REGION }}
+        run: |
+          terraform -chdir=terraform/agent init -lockfile=readonly \
+            -backend-config="bucket=$TF_STATE_BUCKET" -backend-config='prefix=prototype/agent'
+          terraform -chdir=terraform/agent plan -lock-timeout=5m -out=agent.tfplan
+          terraform -chdir=terraform/agent apply -lock-timeout=5m agent.tfplan
+      - name: Verify deployed runtime
+        run: |
+          export QUERY_URL
+          QUERY_URL=$(terraform -chdir=terraform/agent output -raw query_url)
+          bash scripts/smoke-test.sh
+      - name: Deployment summary
+        run: |
+          {
+            echo '### Agent Runtime deployed'
+            echo "Commit: $GITHUB_SHA"
+            echo "Project: $GCP_PROJECT_ID"
+            echo "Region: $GCP_REGION"
+            echo '```'
+            terraform -chdir=terraform/agent output
+            echo '```'
+            echo 'The health smoke test passed. Gemini video analysis requires an uploaded video.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,7 @@
+*
+!app/
+!app/**
+!pyproject.toml
+!uv.lock
+app/**/__pycache__/
+gha-creds-*.json
