@@ -4,10 +4,15 @@
 #   ./scripts/check-runtime.sh
 #
 # Prints the deployed engine, its image and class methods, then calls health.
-# Requires gcloud credentials with access to the project.
+# Requires gcloud credentials with access to the project. The project comes from
+# $PROJECT_ID, falling back to the active gcloud configuration.
 set -euo pipefail
 
-PROJECT_ID=${PROJECT_ID:-aitech-good-s27493}
+PROJECT_ID=${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}
+[[ -n "$PROJECT_ID" && "$PROJECT_ID" != "(unset)" ]] || {
+  echo "Set PROJECT_ID, or select one with: gcloud config set project PROJECT_ID" >&2
+  exit 1
+}
 REGION=${REGION:-us-central1}
 BASE="https://${REGION}-aiplatform.googleapis.com/v1"
 TOKEN=$(gcloud auth print-access-token)

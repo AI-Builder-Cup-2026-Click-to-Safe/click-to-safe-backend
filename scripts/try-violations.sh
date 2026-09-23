@@ -5,11 +5,16 @@
 #   TARGET=local ./scripts/try-violations.sh path/to/clip.mp4  # local server on :8080
 #
 # The deployed runtime is IAM-authenticated, so you need gcloud credentials
-# with access to the project.
+# with access to the project. The project comes from $PROJECT_ID, falling back
+# to the active gcloud configuration.
 set -euo pipefail
 
 VIDEO=${1:?usage: try-violations.sh <video.mp4>}
-PROJECT_ID=${PROJECT_ID:-aitech-good-s27493}
+PROJECT_ID=${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}
+[[ -n "$PROJECT_ID" && "$PROJECT_ID" != "(unset)" ]] || {
+  echo "Set PROJECT_ID, or select one with: gcloud config set project PROJECT_ID" >&2
+  exit 1
+}
 REGION=${REGION:-us-central1}
 BUCKET=${BUCKET:-${PROJECT_ID}-prototype-videos}
 MIN_CONFIDENCE=${MIN_CONFIDENCE:-0.5}

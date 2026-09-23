@@ -1,7 +1,7 @@
 # Prototype — Gemini video analysis server
 
 GitHub Actions → Docker → Artifact Registry → Terraform → **Agent Runtime**.
-The project is `aitech-good-s27493` and the runtime region is `us-central1`.
+The target project is configured per repository and the runtime region is `us-central1`.
 
 This follows Google's [Terraform agent deployment guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/runtime/use-terraform)
 and the [container runtime contract](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/runtime/runtime-contract).
@@ -52,7 +52,7 @@ to reduce the deployer's project-administration rights.
 
 | Name | Default |
 | --- | --- |
-| `GCP_PROJECT_ID` | `aitech-good-s27493` |
+| `GCP_PROJECT_ID` | the pipeline's built-in project |
 | `GCP_REGION` | `us-central1` |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` |
 | `GEMINI_MODEL_REGION` | `global` |
@@ -120,7 +120,7 @@ curl --fail-with-body -X PUT 'upload_url from the response' \
 #    until it finishes.
 curl --fail-with-body --max-time 300 -X POST "$BASE_URL/v1/analyze" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"video_uri":"gs://aitech-good-s27493-prototype-videos/uploads/ID-from-response","mime_type":"video/mp4","prompt":"Summarize the main events in this video with timestamps"}'
+  -d '{"video_uri":"gs://PROJECT_ID-prototype-videos/uploads/ID-from-response","mime_type":"video/mp4","prompt":"Summarize the main events in this video with timestamps"}'
 ```
 
 ### Checking what is deployed
@@ -129,7 +129,8 @@ curl --fail-with-body --max-time 300 -X POST "$BASE_URL/v1/analyze" \
 its registered class methods and its runtime identity, then calls `health`.
 
 ```bash
-./scripts/check-runtime.sh
+./scripts/check-runtime.sh                 # uses the active gcloud project
+PROJECT_ID=my-project ./scripts/check-runtime.sh   # or name one explicitly
 ```
 
 ```text
@@ -138,7 +139,7 @@ Display  : prototype-video-agent
 Updated  : 2026-09-23T07:53:29Z
 Image    : us-central1-docker.pkg.dev/.../video-agent@sha256:b796c7c7...
 Methods  : health, query, analyze_video, review_violations, stream_query
-Identity : prototype-agent-runtime@aitech-good-s27493.iam.gserviceaccount.com
+Identity : prototype-agent-runtime@PROJECT_ID.iam.gserviceaccount.com
 
 Calling health ...
 {"output": {"status": "ok"}}
@@ -154,7 +155,7 @@ project. `gcloud auth login` works only if your own account is granted that role
 otherwise authenticate with a service-account key:
 
 ```bash
-gcloud auth activate-service-account --key-file=KEY.json --project=aitech-good-s27493
+gcloud auth activate-service-account --key-file=KEY.json --project=PROJECT_ID
 ```
 
 ### Traffic violation review (video → JSON)
@@ -237,8 +238,8 @@ video analysis success are verified by a separate video request.
 uv sync --frozen
 uv run ruff check .
 uv run pytest
-export APP_PROJECT_ID=aitech-good-s27493
-export VIDEO_BUCKET=aitech-good-s27493-prototype-videos
+export APP_PROJECT_ID="$(gcloud config get-value project)"
+export VIDEO_BUCKET="${APP_PROJECT_ID}-prototype-videos"
 export MODEL=gemini-3.1-flash-lite
 export MODEL_REGION=global
 gcloud auth application-default login
