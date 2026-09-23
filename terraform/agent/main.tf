@@ -30,7 +30,13 @@ variable "runtime_service_account" { type = string }
 variable "video_bucket" { type = string }
 variable "model" {
   type    = string
-  default = "gemini-3.1-flash-lite"
+  default = "gemini-3.8-flash"
+}
+# Reading the footage is the step the rest of the review depends on, so it runs
+# on a stronger model than the text agents.
+variable "vision_model" {
+  type    = string
+  default = "gemini-3.8-flash"
 }
 variable "model_region" {
   type    = string
@@ -72,6 +78,7 @@ resource "google_vertex_ai_reasoning_engine" "video_agent" {
         for_each = {
           APP_PROJECT_ID = var.project_id
           MODEL          = var.model
+          VISION_MODEL   = var.vision_model
           MODEL_REGION   = var.model_region
           VIDEO_BUCKET   = var.video_bucket
           LAW_CORPUS     = var.law_corpus

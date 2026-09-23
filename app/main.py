@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Prototype Video Agent", version="0.1.0")
 VideoType = Literal["video/mp4", "video/webm", "video/quicktime", "video/mpeg"]
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
+DEFAULT_MODEL = "gemini-3.8-flash"
 # The review runs several agents in sequence, so it needs more room than one call.
 REVIEW_TIMEOUT = 900
 
@@ -152,7 +153,7 @@ async def analyze(body: AnalysisRequest):
     try:
         async with asyncio.timeout(250):
             result = await model_client().aio.models.generate_content(
-                model=os.getenv("MODEL", "gemini-3.1-flash-lite"),
+                model=os.getenv("MODEL", DEFAULT_MODEL),
                 contents=[
                     types.Part.from_uri(file_uri=body.video_uri, mime_type=body.mime_type),
                     body.prompt,
@@ -177,7 +178,7 @@ async def analyze(body: AnalysisRequest):
     return {
         "video_uri": body.video_uri,
         "analysis": result.text,
-        "model": os.getenv("MODEL", "gemini-3.1-flash-lite"),
+        "model": os.getenv("MODEL", DEFAULT_MODEL),
     }
 
 
@@ -203,7 +204,7 @@ async def review_violations(body: ViolationRequest):
     try:
         async with asyncio.timeout(250):
             result = await model_client().aio.models.generate_content(
-                model=os.getenv("MODEL", "gemini-3.1-flash-lite"),
+                model=os.getenv("MODEL", DEFAULT_MODEL),
                 contents=[
                     types.Part.from_uri(file_uri=body.video_uri, mime_type=body.mime_type),
                     request,
@@ -225,7 +226,7 @@ async def review_violations(body: ViolationRequest):
         raise HTTPException(502, "Violation review returned an unexpected shape") from exc
     return {
         "video_uri": body.video_uri,
-        "model": os.getenv("MODEL", "gemini-3.1-flash-lite"),
+        "model": os.getenv("MODEL", DEFAULT_MODEL),
         **report,
     }
 

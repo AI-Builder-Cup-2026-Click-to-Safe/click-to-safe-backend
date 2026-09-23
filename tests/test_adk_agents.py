@@ -126,3 +126,21 @@ def test_retrieval_attaches_as_gemini_grounding_not_a_function_call(corpus):
     assert len(attached) == 1
     assert attached[0].retrieval is not None
     assert attached[0].function_declarations is None
+
+
+def test_the_analyst_reads_footage_on_its_own_stronger_model(corpus, monkeypatch):
+    """Reading the road is what the rest of the review rests on, so the analyst
+    is pinned to a model measured reliable on it rather than the text default."""
+    monkeypatch.delenv("VISION_MODEL", raising=False)
+    monkeypatch.setenv("MODEL", "gemini-2.5-flash")
+
+    agent = adk_agents.build_review_agent()
+    analyst, _, judge = agent.sub_agents
+
+    assert analyst.model == "gemini-3.8-flash"
+    assert judge.model == "gemini-2.5-flash"
+
+
+def test_the_vision_model_can_be_overridden(corpus, monkeypatch):
+    monkeypatch.setenv("VISION_MODEL", "gemini-2.5-pro")
+    assert adk_agents.build_review_agent().sub_agents[0].model == "gemini-2.5-pro"
