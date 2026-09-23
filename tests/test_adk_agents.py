@@ -19,9 +19,7 @@ class FakeContext:
 
 @pytest.fixture
 def corpus(monkeypatch):
-    monkeypatch.setenv(
-        "LAW_CORPUS", "projects/p/locations/europe-west4/ragCorpora/123"
-    )
+    monkeypatch.setenv("LAW_CORPUS", "projects/p/locations/europe-west4/ragCorpora/123")
 
 
 def test_loop_is_bounded_to_the_allowed_follow_up_rounds(corpus):

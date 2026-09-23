@@ -52,6 +52,8 @@ jobs:
       GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
       MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.1-flash-lite' }}
       MODEL_REGION: ${{ vars.GEMINI_MODEL_REGION || 'global' }}
+      # Optional: deploys without statute retrieval when unset.
+      LAW_CORPUS: ${{ vars.LAW_CORPUS }}
       TF_IN_AUTOMATION: 'true'
       TF_INPUT: 'false'
     steps:
@@ -119,6 +121,7 @@ jobs:
           TF_VAR_image_uri: ${{ steps.foundation.outputs.image_repository }}@${{ steps.image.outputs.digest }}
           TF_VAR_model: ${{ env.MODEL }}
           TF_VAR_model_region: ${{ env.MODEL_REGION }}
+          TF_VAR_law_corpus: ${{ env.LAW_CORPUS }}
         run: |
           terraform -chdir=terraform/agent init -lockfile=readonly \
             -backend-config="bucket=$TF_STATE_BUCKET" -backend-config='prefix=prototype/agent'
