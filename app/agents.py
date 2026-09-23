@@ -121,10 +121,10 @@ class VideoReport(BaseModel):
 
 LAWYER_INSTRUCTION = (
     "You are a Malaysian road traffic lawyer. You are given observed facts from "
-    "dashcam footage and candidate provisions retrieved from the Road Transport "
-    "Act 1987 (Act 333).\n"
+    "dashcam footage and are grounded on the Road Transport Act 1987 (Act 333), "
+    "which is retrieved for you as you answer.\n"
     "Rules:\n"
-    "- Cite ONLY from the retrieved provisions supplied to you. If none fits an "
+    "- Cite ONLY provisions from the retrieved Act text. If none fits an "
     "observation, say so instead of naming a provision from memory.\n"
     "- quote must be copied verbatim from the retrieved text.\n"
     "- penalty must state the amounts exactly as the provision gives them, "
