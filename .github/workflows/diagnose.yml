@@ -13,7 +13,7 @@ defaults:
     shell: bash
 jobs:
   diagnose:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/codex/verify-video-20260923'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -44,14 +44,14 @@ jobs:
             -H "Authorization: Bearer $(gcloud auth print-access-token)" \
             "https://${GCP_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT_ID}/locations/${GCP_REGION}/reasoningEngines/${ENGINE_ID}/operations" \
             | jq '{error, operations: [.operations[]? | {name,done,error,metadata}]}'
-      - name: Inspect authenticated health response
+      - name: Run sample through deployed multi-agent review
         if: always()
         run: |
           [[ "$ENGINE_ID" =~ ^[0-9]+$ ]]
-          curl --silent --show-error --max-time 180 --write-out '\nHTTP %{http_code}\n' \
+          curl --silent --show-error --max-time 360 --write-out '\nHTTP %{http_code}\n' \
             -H "Authorization: Bearer $(gcloud auth print-access-token)" \
             -H 'Content-Type: application/json' \
-            -d '{"class_method":"health","input":{}}' \
+            -d '{"class_method":"review_traffic","input":{"video_uri":"gs://aitech-good-s27493-prototype-videos/uploads/4d6b6cdf-696f-4f82-a591-f92cd2715245","mime_type":"video/mp4"}}' \
             "https://${GCP_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT_ID}/locations/${GCP_REGION}/reasoningEngines/${ENGINE_ID}:query"
       - name: Inspect runtime logs
         if: always()
