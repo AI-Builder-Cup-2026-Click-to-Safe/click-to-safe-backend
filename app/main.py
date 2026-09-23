@@ -17,12 +17,15 @@ from google.cloud import storage
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.adk_runner import run_review
 from app.violations import build_report, review_config
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Prototype Video Agent", version="0.1.0")
 VideoType = Literal["video/mp4", "video/webm", "video/quicktime", "video/mpeg"]
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
+# The review runs several agents in sequence, so it needs more room than one call.
+REVIEW_TIMEOUT = 900
 
 
 class UploadRequest(BaseModel):
@@ -48,6 +51,13 @@ class ViolationRequest(BaseModel):
     mime_type: VideoType = "video/mp4"
     # Findings below this visual certainty are dropped before the response is built.
     min_confidence: float = Field(default=0.5, ge=0, le=1)
+    focus: str = Field(default="", max_length=2000)
+
+
+class ReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    video_uri: str = Field(min_length=8, max_length=2048)
+    mime_type: VideoType = "video/mp4"
     focus: str = Field(default="", max_length=2000)
 
 
@@ -121,7 +131,7 @@ def create_upload(body: UploadRequest):
     }
 
 
-def check_uploaded_video(body: AnalysisRequest | ViolationRequest):
+def check_uploaded_video(body: AnalysisRequest | ViolationRequest | ReviewRequest):
     object_name = checked_object(body.video_uri)
     blob = storage_client().bucket(video_bucket()).blob(object_name)
     try:
@@ -220,11 +230,39 @@ async def review_violations(body: ViolationRequest):
     }
 
 
+@app.post("/v1/review")
+async def review(body: ReviewRequest):
+    """Run the analyst, lawyer and judge agents over an uploaded clip."""
+    # Reject foreign URLs before obtaining credentials or calling any service.
+    checked_object(body.video_uri)
+    await asyncio.to_thread(check_uploaded_video, body)
+    try:
+        # Three agents over up to three rounds; the cap keeps a stuck review bounded.
+        async with asyncio.timeout(REVIEW_TIMEOUT):
+            return await run_review(body.video_uri, body.mime_type, body.focus)
+    except TimeoutError as exc:
+        raise HTTPException(504, "Agent review timed out") from exc
+    except ValueError as exc:
+        logger.error("Agent review produced no verdict")
+        raise HTTPException(502, "Agent review produced no verdict") from exc
+    except Exception as exc:
+        # Do not log video URLs, prompts, or upstream response bodies.
+        logger.error("Agent review failed (%s)", type(exc).__name__)
+        raise HTTPException(502, "Agent review failed") from exc
+
+
 def analysis_input(body: Invocation):
     try:
         return AnalysisRequest.model_validate(body.input)
     except ValidationError as exc:
         raise HTTPException(422, "input requires video_uri, optional mime_type and prompt") from exc
+
+
+def review_input(body: Invocation):
+    try:
+        return ReviewRequest.model_validate(body.input)
+    except ValidationError as exc:
+        raise HTTPException(422, "input requires video_uri, optional mime_type and focus") from exc
 
 
 def violation_input(body: Invocation):
@@ -253,6 +291,8 @@ async def query(request: Request):
     body = await runtime_invocation(request)
     if body.class_method == "health":
         return {"output": health()}
+    if body.class_method == "review_traffic":
+        return {"output": await review(review_input(body))}
     if body.class_method == "review_violations":
         return {"output": await review_violations(violation_input(body))}
     if body.class_method not in {"query", "analyze_video"}:

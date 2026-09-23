@@ -27,6 +27,7 @@ from app.agents import (
     JUDGE_INSTRUCTION,
     JUDGE_SCHEMA,
     LAWYER_INSTRUCTION,
+    LAWYER_SCHEMA,
     MAX_FOLLOW_UP_ROUNDS,
     VIDEO_INSTRUCTION,
     VIDEO_SCHEMA,
@@ -118,7 +119,6 @@ def build_lawyer_agent() -> LlmAgent:
         ),
         # A retrieval tool must be the only tool on its agent.
         tools=[tool] if tool else [],
-        output_key=STATE_LEGAL,
     )
 
 
@@ -132,13 +132,18 @@ def build_lawyer_step() -> LlmAgent:
     return LlmAgent(
         name="lawyer_step",
         model=_model(),
-        description="Sends the observed facts to the traffic lawyer for citation.",
+        description="Records the traffic lawyer's citations as structured findings.",
         instruction=(
             "Call traffic_lawyer exactly once to have the observed driving conduct "
-            "matched against Malaysian statute provisions, then reply with the single "
-            "word done. Do not analyse the footage or name any provision yourself."
+            "matched against Malaysian statute provisions. Then record what it "
+            "returned in the required JSON shape, changing nothing: keep each "
+            "section number, quote and penalty exactly as the lawyer gave them, and "
+            "carry its gaps across. Never analyse the footage or name a provision "
+            "the lawyer did not cite. If it cited nothing, return empty findings."
         ),
         tools=[AgentTool(agent=build_lawyer_agent())],
+        output_schema=LAWYER_SCHEMA,
+        output_key=STATE_LEGAL,
     )
 
 

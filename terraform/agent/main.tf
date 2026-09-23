@@ -36,6 +36,17 @@ variable "model_region" {
   type    = string
   default = "global"
 }
+# RAG Engine is not open to new projects in every region, so the statute corpus
+# may live apart from the runtime; retrieval is a plain HTTPS call either way.
+variable "law_corpus" {
+  type        = string
+  default     = ""
+  description = "Full resource name of the statute RAG corpus, or empty to run without retrieval."
+  validation {
+    condition     = var.law_corpus == "" || can(regex("^projects/[^/]+/locations/[^/]+/ragCorpora/[0-9]+$", var.law_corpus))
+    error_message = "Use a full ragCorpora resource name, or leave it empty."
+  }
+}
 
 resource "google_vertex_ai_reasoning_engine" "video_agent" {
   display_name = "prototype-video-agent"
@@ -63,6 +74,11 @@ resource "google_vertex_ai_reasoning_engine" "video_agent" {
           MODEL          = var.model
           MODEL_REGION   = var.model_region
           VIDEO_BUCKET   = var.video_bucket
+          LAW_CORPUS     = var.law_corpus
+          # The ADK agents read these to reach Vertex AI.
+          GOOGLE_CLOUD_PROJECT      = var.project_id
+          GOOGLE_CLOUD_LOCATION     = var.model_region
+          GOOGLE_GENAI_USE_VERTEXAI = "TRUE"
         }
         content {
           name  = env.key
@@ -75,6 +91,7 @@ resource "google_vertex_ai_reasoning_engine" "video_agent" {
       { name = "query", api_mode = "async" },
       { name = "analyze_video", api_mode = "async" },
       { name = "review_violations", api_mode = "async" },
+      { name = "review_traffic", api_mode = "async" },
       { name = "stream_query", api_mode = "async_stream" }
     ])
   }
