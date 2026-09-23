@@ -106,6 +106,64 @@ curl --fail-with-body --max-time 300 -X POST "$BASE_URL/v1/analyze" \
   -d '{"video_uri":"gs://aitech-good-s27493-prototype-videos/uploads/응답의ID","mime_type":"video/mp4","prompt":"영상의 주요 사건과 시간대를 한국어로 정리해줘"}'
 ```
 
+### 교통법규 위반 검출 (영상 → JSON)
+
+`/v1/violations`는 블랙박스 영상에서 **다른 차량**의 위반을 찾아 고정된 JSON 구조로 돌려줍니다.
+`response_schema`로 디코딩을 제약하므로 파싱 실패가 발생하지 않습니다.
+모델 출력(`description`, `evidence`, `summary`)은 영상 속 언어와 무관하게 항상 영어입니다.
+
+```bash
+curl --fail-with-body --max-time 300 -X POST "$BASE_URL/v1/violations" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"video_uri":"gs://.../uploads/ID","min_confidence":0.5}'
+```
+
+| 필드 | 의미 |
+| --- | --- |
+| `min_confidence` | 이 값 미만의 확신도를 가진 결과는 응답 전에 제외됩니다 (기본 `0.5`) |
+| `focus` | 특정 위반에 주목시키고 싶을 때 쓰는 자유 텍스트 (선택) |
+
+응답 예시입니다. `violations`는 발생 시각 순으로 정렬되며, 위반이 없으면 빈 배열입니다.
+
+```json
+{
+  "video_uri": "gs://.../uploads/ID",
+  "model": "gemini-3.1-flash-lite",
+  "violation_count": 1,
+  "violations": [
+    {
+      "violation_type": "shoulder_driving",
+      "description": "A white vehicle drives on the shoulder to bypass congestion.",
+      "start_seconds": 18.5,
+      "end_seconds": 23.5,
+      "vehicle": "white sedan",
+      "confidence": 0.95,
+      "evidence": "The vehicle moves outside the lane markings to overtake other cars."
+    }
+  ],
+  "summary": "During congestion, a white vehicle was observed driving on the shoulder.",
+  "filtered_out": 0
+}
+```
+
+`violation_type`은 집계가 가능하도록 고정된 값만 사용합니다:
+`red_light_running`, `illegal_lane_change`, `shoulder_driving`, `signal_violation`,
+`illegal_u_turn`, `tailgating`, `speeding`, `center_line_crossing`,
+`illegal_parking`, `failure_to_yield`, `other`.
+
+Agent Runtime에서는 `{"class_method":"review_violations","input":{...}}`로 같은 결과를 받습니다.
+
+**이 결과는 자동 검토 보조 수단이며 법적 판단이 아닙니다.** `confidence`는 모델의 시각적 확신도일
+뿐이므로, 실제 신고/처분에 쓰려면 사람이 해당 구간을 직접 확인해야 합니다. 번호판은 모델이
+추측하지 않도록 지시되어 있으며 `vehicle`에는 외형 설명만 들어갑니다.
+
+편의 스크립트로 업로드부터 결과 확인까지 한 번에 실행할 수 있습니다.
+
+```bash
+./scripts/try-violations.sh video.mp4              # 배포된 런타임 호출
+TARGET=local ./scripts/try-violations.sh video.mp4 # 로컬 서버(:8080) 호출
+```
+
 응답: `{"video_uri":"gs://...", "analysis":"분석 결과", "model":"gemini-3.1-flash-lite"}`.
 `query_url`에서도 `{"class_method":"analyze_video","input":{"video_uri":"gs://..."}}`로 호출할 수 있습니다.
 `stream_query`는 런타임 NDJSON 계약을 제공하며 현재 분석 완료 후 결과 한 개를 반환합니다.

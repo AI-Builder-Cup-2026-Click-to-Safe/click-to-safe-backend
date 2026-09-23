@@ -74,6 +74,7 @@ resource "google_vertex_ai_reasoning_engine" "video_agent" {
       { name = "health", api_mode = "" },
       { name = "query", api_mode = "async" },
       { name = "analyze_video", api_mode = "async" },
+      { name = "review_violations", api_mode = "async" },
       { name = "stream_query", api_mode = "async_stream" }
     ])
   }

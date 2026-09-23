@@ -77,6 +77,14 @@ resource "google_project_iam_member" "runtime_vertex" {
   member  = google_service_account.runtime.member
 }
 
+# The Cloud Storage JSON API bills requests to the caller's project, so the
+# runtime identity needs project-level service usage even for bucket-scoped reads.
+resource "google_project_iam_member" "runtime_service_usage" {
+  project = var.project_id
+  role    = "roles/serviceusage.serviceUsageConsumer"
+  member  = google_service_account.runtime.member
+}
+
 resource "google_storage_bucket" "videos" {
   name                        = "${var.project_id}-prototype-videos"
   location                    = var.region
