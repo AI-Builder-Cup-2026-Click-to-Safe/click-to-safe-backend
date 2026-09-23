@@ -39,7 +39,28 @@ STATE_VERDICT = "verdict"
 
 
 def _model() -> str:
-    return os.getenv("MODEL", "gemini-3.1-flash-lite")
+    return os.getenv("MODEL", "gemini-3.8-flash")
+
+
+def _vision_model() -> str:
+    """Model for reading the footage.
+
+    Watching the road is the hardest step and the one everything else rests on:
+    misread the lane layout and the lawyer cites the wrong provision. Measured on
+    the sample clip, asking each model how many lanes ran in the direction of
+    travel (the road is single-lane), over three runs each:
+
+        gemini-3.8-flash        3/3   <- chosen
+        gemini-3.7-flash        3/3
+        gemini-2.5-pro          3/3
+        gemini-3.1-pro-preview  1/3
+        gemini-3.1-flash-lite   0/3
+
+    Newer did not mean better: the preview Pro was the least reliable of these.
+    Kept separate from MODEL so the analyst can be moved without touching the
+    text agents, even though both now default to the same model.
+    """
+    return os.getenv("VISION_MODEL", "gemini-3.8-flash")
 
 
 def use_vertex_ai() -> None:
@@ -104,7 +125,7 @@ def law_retrieval_tool() -> VertexAiRagRetrieval | None:
 def build_video_agent() -> LlmAgent:
     return LlmAgent(
         name="video_analyst",
-        model=_model(),
+        model=_vision_model(),
         description="Describes dashcam footage per time window and per vehicle.",
         instruction=(
             VIDEO_INSTRUCTION + "\n\nAnalyse the footage supplied with this request. If a previous "

@@ -50,7 +50,8 @@ jobs:
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'aitech-good-s27493' }}
       GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
-      MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.1-flash-lite' }}
+      MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
+      VISION_MODEL: ${{ vars.GEMINI_VISION_MODEL || 'gemini-3.8-flash' }}
       MODEL_REGION: ${{ vars.GEMINI_MODEL_REGION || 'global' }}
       # Optional: deploys without statute retrieval when unset.
       LAW_CORPUS: ${{ vars.LAW_CORPUS }}
@@ -120,6 +121,7 @@ jobs:
         env:
           TF_VAR_image_uri: ${{ steps.foundation.outputs.image_repository }}@${{ steps.image.outputs.digest }}
           TF_VAR_model: ${{ env.MODEL }}
+          TF_VAR_vision_model: ${{ env.VISION_MODEL }}
           TF_VAR_model_region: ${{ env.MODEL_REGION }}
           TF_VAR_law_corpus: ${{ env.LAW_CORPUS }}
         run: |
