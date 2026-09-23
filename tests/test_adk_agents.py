@@ -97,11 +97,13 @@ def test_vertex_settings_come_from_the_apps_own_variables(monkeypatch):
     assert os.environ["GOOGLE_GENAI_USE_VERTEXAI"] == "TRUE"
 
 
-def test_an_existing_vertex_setting_is_not_overwritten(monkeypatch):
-    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "europe-west4")
+def test_model_region_overrides_the_location_the_runtime_injects(monkeypatch):
+    """Agent Runtime injects its own region, where the model may not be served;
+    deploying with MODEL_REGION=global must win or the runtime answers 404."""
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
     monkeypatch.setenv("MODEL_REGION", "global")
     adk_agents.use_vertex_ai()
 
     import os
 
-    assert os.environ["GOOGLE_CLOUD_LOCATION"] == "europe-west4"
+    assert os.environ["GOOGLE_CLOUD_LOCATION"] == "global"
