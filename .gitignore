@@ -18,3 +18,4 @@ gha-creds-*.json
 !*.tfvars.example
 crash.log
 .DS_Store
+.omc/

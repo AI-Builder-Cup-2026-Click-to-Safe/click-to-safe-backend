@@ -23,7 +23,7 @@ def cloud(monkeypatch):
     )
     storage = Mock()
     storage.bucket.return_value.blob.return_value = blob
-    generate = AsyncMock(return_value=SimpleNamespace(text="영상 분석 결과"))
+    generate = AsyncMock(return_value=SimpleNamespace(text="video analysis result"))
     model = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
     monkeypatch.setattr(main, "storage_client", lambda: storage)
     monkeypatch.setattr(main, "model_client", lambda: model)
@@ -97,7 +97,7 @@ def test_video_is_passed_as_media_not_just_a_text_url(client, cloud):
     uri = "gs://test-videos/uploads/video.mp4"
     response = client.post("/v1/analyze", json={"video_uri": uri})
     assert response.status_code == 200
-    assert response.json()["analysis"] == "영상 분석 결과"
+    assert response.json()["analysis"] == "video analysis result"
     media = generate.call_args.kwargs["contents"][0]
     assert media.file_data.file_uri == uri
     assert media.file_data.mime_type == "video/mp4"

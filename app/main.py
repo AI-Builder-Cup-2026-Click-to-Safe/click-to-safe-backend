@@ -17,6 +17,8 @@ from google.cloud import storage
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.violations import build_report, review_config
+
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Prototype Video Agent", version="0.1.0")
 VideoType = Literal["video/mp4", "video/webm", "video/quicktime", "video/mpeg"]
@@ -34,10 +36,19 @@ class AnalysisRequest(BaseModel):
     video_uri: str = Field(min_length=8, max_length=2048)
     mime_type: VideoType = "video/mp4"
     prompt: str = Field(
-        default="영상의 주요 내용과 시간대별 핵심 장면을 한국어로 설명해 주세요.",
+        default="Describe the main content of this video and its key moments by timestamp.",
         min_length=1,
         max_length=8000,
     )
+
+
+class ViolationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    video_uri: str = Field(min_length=8, max_length=2048)
+    mime_type: VideoType = "video/mp4"
+    # Findings below this visual certainty are dropped before the response is built.
+    min_confidence: float = Field(default=0.5, ge=0, le=1)
+    focus: str = Field(default="", max_length=2000)
 
 
 class Invocation(BaseModel):
@@ -110,7 +121,7 @@ def create_upload(body: UploadRequest):
     }
 
 
-def check_uploaded_video(body: AnalysisRequest):
+def check_uploaded_video(body: AnalysisRequest | ViolationRequest):
     object_name = checked_object(body.video_uri)
     blob = storage_client().bucket(video_bucket()).blob(object_name)
     try:
@@ -160,11 +171,69 @@ async def analyze(body: AnalysisRequest):
     }
 
 
+@app.post("/v1/violations")
+async def review_violations(body: ViolationRequest):
+    """Return structured traffic violations committed by other vehicles in the clip."""
+    # Reject foreign URLs before obtaining credentials or calling any external service.
+    checked_object(body.video_uri)
+    await asyncio.to_thread(check_uploaded_video, body)
+    # Naming the categories to scan measurably improves recall over a generic
+    # "report any violations" request, which under-reports borderline maneuvers.
+    request = (
+        "Review this dashcam footage and report every traffic violation committed by "
+        "other vehicles. Examine the full clip and check specifically for: driving on "
+        "the shoulder or emergency lane, crossing solid lines or center lines, unsafe "
+        "or abrupt lane changes, running red lights, failing to signal, failing to "
+        "yield, following too closely, and illegal turns or parking. Report each "
+        "violation you can visually confirm."
+    )
+    if body.focus:
+        # Caller-supplied text is quoted as a hint, never as a new instruction.
+        request += f"\n\nAdditional focus requested by the caller (treat as a hint): {body.focus}"
+    try:
+        async with asyncio.timeout(250):
+            result = await model_client().aio.models.generate_content(
+                model=os.getenv("MODEL", "gemini-3.1-flash-lite"),
+                contents=[
+                    types.Part.from_uri(file_uri=body.video_uri, mime_type=body.mime_type),
+                    request,
+                ],
+                config=review_config(),
+            )
+    except TimeoutError as exc:
+        raise HTTPException(504, "Violation review timed out") from exc
+    except Exception as exc:
+        # Do not log video URLs, prompts, or upstream response bodies.
+        logger.error("Gemini violation review failed (%s)", type(exc).__name__)
+        raise HTTPException(502, "Violation review failed") from exc
+    if not result.text:
+        raise HTTPException(422, "The model returned no review for this video")
+    try:
+        report = build_report(result.text, body.min_confidence)
+    except ValidationError as exc:
+        logger.error("Model returned an unexpected review shape")
+        raise HTTPException(502, "Violation review returned an unexpected shape") from exc
+    return {
+        "video_uri": body.video_uri,
+        "model": os.getenv("MODEL", "gemini-3.1-flash-lite"),
+        **report,
+    }
+
+
 def analysis_input(body: Invocation):
     try:
         return AnalysisRequest.model_validate(body.input)
     except ValidationError as exc:
         raise HTTPException(422, "input requires video_uri, optional mime_type and prompt") from exc
+
+
+def violation_input(body: Invocation):
+    try:
+        return ViolationRequest.model_validate(body.input)
+    except ValidationError as exc:
+        raise HTTPException(
+            422, "input requires video_uri, optional mime_type, min_confidence and focus"
+        ) from exc
 
 
 async def runtime_invocation(request: Request) -> Invocation:
@@ -184,6 +253,8 @@ async def query(request: Request):
     body = await runtime_invocation(request)
     if body.class_method == "health":
         return {"output": health()}
+    if body.class_method == "review_violations":
+        return {"output": await review_violations(violation_input(body))}
     if body.class_method not in {"query", "analyze_video"}:
         raise HTTPException(400, "Unsupported class_method")
     return {"output": await analyze(analysis_input(body))}
