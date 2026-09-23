@@ -107,3 +107,22 @@ def test_model_region_overrides_the_location_the_runtime_injects(monkeypatch):
     import os
 
     assert os.environ["GOOGLE_CLOUD_LOCATION"] == "global"
+
+
+def test_retrieval_attaches_as_gemini_grounding_not_a_function_call(corpus):
+    """On Gemini, ADK attaches this tool as built-in retrieval rather than a
+    callable function, so a review emits no function_call for it; evidence that
+    it ran is grounding_metadata on the response, not a tool-call event."""
+    from google.adk.models.llm_request import LlmRequest
+
+    tool = adk_agents.law_retrieval_tool()
+    request = LlmRequest(model="gemini-3.1-flash-lite")
+
+    import asyncio
+
+    asyncio.run(tool.process_llm_request(tool_context=None, llm_request=request))
+
+    attached = request.config.tools
+    assert len(attached) == 1
+    assert attached[0].retrieval is not None
+    assert attached[0].function_declarations is None
