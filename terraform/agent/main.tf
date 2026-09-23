@@ -75,10 +75,8 @@ resource "google_vertex_ai_reasoning_engine" "video_agent" {
           MODEL_REGION   = var.model_region
           VIDEO_BUCKET   = var.video_bucket
           LAW_CORPUS     = var.law_corpus
-          # The ADK agents read these to reach Vertex AI.
-          GOOGLE_CLOUD_PROJECT      = var.project_id
-          GOOGLE_CLOUD_LOCATION     = var.model_region
-          GOOGLE_GENAI_USE_VERTEXAI = "TRUE"
+          # Agent Runtime reserves GOOGLE_CLOUD_*; the ADK agents are pointed at
+          # Vertex from code using APP_PROJECT_ID and MODEL_REGION instead.
         }
         content {
           name  = env.key

@@ -78,3 +78,30 @@ def test_judge_carries_a_schema_and_no_tools(corpus):
     assert judge.tools == []
     assert judge.output_schema is not None
     assert judge.after_agent_callback
+
+
+def test_vertex_settings_come_from_the_apps_own_variables(monkeypatch):
+    """Agent Runtime reserves the GOOGLE_CLOUD_* names, so they cannot be set by
+    the deployment and are derived from APP_PROJECT_ID and MODEL_REGION."""
+    for key in ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_GENAI_USE_VERTEXAI"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("APP_PROJECT_ID", "proj-x")
+    monkeypatch.setenv("MODEL_REGION", "global")
+
+    adk_agents.use_vertex_ai()
+
+    import os
+
+    assert os.environ["GOOGLE_CLOUD_PROJECT"] == "proj-x"
+    assert os.environ["GOOGLE_CLOUD_LOCATION"] == "global"
+    assert os.environ["GOOGLE_GENAI_USE_VERTEXAI"] == "TRUE"
+
+
+def test_an_existing_vertex_setting_is_not_overwritten(monkeypatch):
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "europe-west4")
+    monkeypatch.setenv("MODEL_REGION", "global")
+    adk_agents.use_vertex_ai()
+
+    import os
+
+    assert os.environ["GOOGLE_CLOUD_LOCATION"] == "europe-west4"

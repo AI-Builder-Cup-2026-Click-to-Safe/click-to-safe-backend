@@ -42,6 +42,19 @@ def _model() -> str:
     return os.getenv("MODEL", "gemini-3.1-flash-lite")
 
 
+def use_vertex_ai() -> None:
+    """Point ADK at Vertex AI using this app's own settings.
+
+    Agent Runtime reserves the GOOGLE_CLOUD_* names, so the deployment cannot set
+    them; ADK reads them from the environment, so they are derived here instead.
+    """
+    project = os.getenv("APP_PROJECT_ID")
+    if project:
+        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project)
+    os.environ.setdefault("GOOGLE_CLOUD_LOCATION", os.getenv("MODEL_REGION", "global"))
+    os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "TRUE")
+
+
 def stop_when_decided(callback_context) -> None:
     """End the loop once the judge says it needs nothing further.
 
@@ -167,6 +180,7 @@ def build_judge_agent() -> LlmAgent:
 
 def build_review_agent() -> LoopAgent:
     """The master agent: analyst -> lawyer -> judge, repeated until the judge exits."""
+    use_vertex_ai()
     # ADK marks LoopAgent deprecated in favour of Workflow, but that type is not
     # exported by this release and its own notice says it cannot yet be an
     # LlmAgent sub-agent, so LoopAgent remains the supported choice here.
