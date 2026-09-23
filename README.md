@@ -123,6 +123,40 @@ curl --fail-with-body --max-time 300 -X POST "$BASE_URL/v1/analyze" \
   -d '{"video_uri":"gs://aitech-good-s27493-prototype-videos/uploads/ID-from-response","mime_type":"video/mp4","prompt":"Summarize the main events in this video with timestamps"}'
 ```
 
+### Checking what is deployed
+
+`scripts/check-runtime.sh` prints the deployed engine, the exact image digest it runs,
+its registered class methods and its runtime identity, then calls `health`.
+
+```bash
+./scripts/check-runtime.sh
+```
+
+```text
+Engine   : projects/.../locations/us-central1/reasoningEngines/891188808928722944
+Display  : prototype-video-agent
+Updated  : 2026-09-23T07:53:29Z
+Image    : us-central1-docker.pkg.dev/.../video-agent@sha256:b796c7c7...
+Methods  : health, query, analyze_video, review_violations, stream_query
+Identity : prototype-agent-runtime@aitech-good-s27493.iam.gserviceaccount.com
+
+Calling health ...
+{"output": {"status": "ok"}}
+```
+
+`Updated` and `Image` tell you whether the running revision is the one you just pushed;
+compare the digest with the one in the deployment Summary. A `health` response of `ok`
+only proves the container serves traffic — it does not exercise Gemini or Cloud Storage,
+so confirm those with an actual video request.
+
+The endpoint requires Google IAM credentials that have `roles/aiplatform.user` on the
+project. `gcloud auth login` works only if your own account is granted that role;
+otherwise authenticate with a service-account key:
+
+```bash
+gcloud auth activate-service-account --key-file=KEY.json --project=aitech-good-s27493
+```
+
 ### Traffic violation review (video → JSON)
 
 `/v1/violations` reviews dashcam footage for violations committed by **other vehicles**
