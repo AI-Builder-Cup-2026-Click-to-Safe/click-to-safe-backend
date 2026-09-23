@@ -246,8 +246,13 @@ async def review(body: ReviewRequest):
         logger.error("Agent review produced no verdict")
         raise HTTPException(502, "Agent review produced no verdict") from exc
     except Exception as exc:
-        # Do not log video URLs, prompts, or upstream response bodies.
-        logger.error("Agent review failed (%s)", type(exc).__name__)
+        # Log the upstream status alongside the type: a code is not sensitive and
+        # the type alone cannot tell a permission failure from a missing model.
+        logger.error(
+            "Agent review failed (%s, status=%s)",
+            type(exc).__name__,
+            getattr(exc, "code", getattr(exc, "status_code", "?")),
+        )
         raise HTTPException(502, "Agent review failed") from exc
 
 
