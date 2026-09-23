@@ -45,13 +45,19 @@ def _model() -> str:
 def use_vertex_ai() -> None:
     """Point ADK at Vertex AI using this app's own settings.
 
-    Agent Runtime reserves the GOOGLE_CLOUD_* names, so the deployment cannot set
-    them; ADK reads them from the environment, so they are derived here instead.
+    Agent Runtime reserves the GOOGLE_CLOUD_* names because it injects them
+    itself, and it sets the location to its own region. The model may not be
+    served there -- ours is global -- so MODEL_REGION overrides that value rather
+    than defaulting behind it. Without this the runtime answers 404 for a model
+    that works locally.
     """
     project = os.getenv("APP_PROJECT_ID")
     if project:
-        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project)
-    os.environ.setdefault("GOOGLE_CLOUD_LOCATION", os.getenv("MODEL_REGION", "global"))
+        os.environ["GOOGLE_CLOUD_PROJECT"] = project
+    region = os.getenv("MODEL_REGION")
+    if region:
+        os.environ["GOOGLE_CLOUD_LOCATION"] = region
+    os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
     os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "TRUE")
 
 
