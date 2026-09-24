@@ -14,6 +14,8 @@ Google Gen AI SDK. ADK sessions, memory, and Playground chat are not included.
    [GitHub Actions Secrets](https://github.com/Lorem-Ipsum-AI-Builder-Cup-2026/prototype/settings/secrets/actions)
    and paste the **entire contents** of the service-account JSON file.
    Never commit the JSON file to the repository.
+   Add **`PUBLIC_API_TOKEN`** in the same place: it is the shared token that
+   guards the public Cloud Run endpoint, and deployment fails without it.
 2. Billing must be enabled on the GCP project, and the service account needs the roles below.
 3. Run **Run workflow → main** from
    [Actions → Deploy Agent Runtime](https://github.com/Lorem-Ipsum-AI-Builder-Cup-2026/prototype/actions/workflows/deploy.yml).
@@ -54,8 +56,10 @@ to reduce the deployer's project-administration rights.
 | --- | --- |
 | `GCP_PROJECT_ID` | the pipeline's built-in project |
 | `GCP_REGION` | `us-central1` |
-| `GEMINI_MODEL` | `gemini-3.1-flash-lite` |
+| `GEMINI_MODEL` | `gemini-3.8-flash` |
+| `GEMINI_VISION_MODEL` | `gemini-3.8-flash` |
 | `GEMINI_MODEL_REGION` | `global` |
+| `LAW_CORPUS` | unset; deploys without statute retrieval |
 
 Changing the project or region after the first deployment may require moving or
 recreating existing resources.
@@ -82,6 +86,58 @@ recreating existing resources.
   scales to zero when idle, so the first request may hit a cold start.
 - Videos and images are never deleted automatically. Add a lifecycle policy once a
   retention period is decided.
+
+## Public API on Cloud Run
+
+The same image is also served from Cloud Run at a public URL, where a fixed token
+takes the place of Google IAM. Terraform stores that token in Secret Manager and
+mounts it as `API_TOKEN`; `PUBLIC_API=true` is what installs the check, so the
+Agent Runtime deployment of the identical image stays on IAM.
+
+Every path except `/healthz` requires the token, which Cloud Run's probes need
+before any caller authenticates:
+
+```
+Authorization: Bearer <PUBLIC_API_TOKEN>
+```
+
+A missing or wrong token returns `401`. If the deployment ever lands without the
+token configured, the service returns `503` for everything rather than serving
+the API unauthenticated.
+
+Read the URL from the deploy run's Summary (`public_api_url`), then run the whole
+flow — upload and review — with no gcloud credentials:
+
+```bash
+export PUBLIC_API_URL=https://...run.app
+export PUBLIC_API_TOKEN=...
+./scripts/public-review.sh dashcam.mp4
+```
+
+Or call it directly. The upload slot is issued by the API itself, and the PUT that
+follows goes straight to Cloud Storage, which keeps a 100 MiB video clear of Cloud
+Run's 32 MiB request limit:
+
+```bash
+# 1. Ask for an upload slot, passing the real byte size.
+curl -X POST "$PUBLIC_API_URL/v1/uploads" \
+  -H "Authorization: Bearer $PUBLIC_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"mime_type":"video/mp4","size_bytes":12345678}'
+
+# 2. PUT the file to the returned upload_url. This request carries no token.
+curl -X PUT "$UPLOAD_URL" -H 'Content-Type: video/mp4' --upload-file dashcam.mp4
+
+# 3. Review the video_uri from step 1. Keep the connection open; a review runs
+#    three agents and takes minutes.
+curl -X POST "$PUBLIC_API_URL/v1/review" \
+  -H "Authorization: Bearer $PUBLIC_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"video_uri":"gs://.../uploads/...","mime_type":"video/mp4"}'
+```
+
+To rotate the token, update the `PUBLIC_API_TOKEN` secret and re-run the deploy:
+Terraform adds a new Secret Manager version and the revision picks up `latest`.
 
 ## Application integration
 

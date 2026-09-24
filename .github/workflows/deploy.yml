@@ -134,6 +134,30 @@ jobs:
           export QUERY_URL
           QUERY_URL=$(terraform -chdir=terraform/agent output -raw query_url)
           bash scripts/smoke-test.sh
+      - name: Deploy the public Cloud Run API
+        id: public
+        env:
+          TF_VAR_image_uri: ${{ steps.foundation.outputs.image_repository }}@${{ steps.image.outputs.digest }}
+          TF_VAR_model: ${{ env.MODEL }}
+          TF_VAR_vision_model: ${{ env.VISION_MODEL }}
+          TF_VAR_model_region: ${{ env.MODEL_REGION }}
+          TF_VAR_law_corpus: ${{ env.LAW_CORPUS }}
+          TF_VAR_api_token: ${{ secrets.PUBLIC_API_TOKEN }}
+        run: |
+          if [[ -z "$TF_VAR_api_token" ]]; then
+            echo '::error::Add the PUBLIC_API_TOKEN repository secret; the public API needs it.'
+            exit 1
+          fi
+          terraform -chdir=terraform/public init -lockfile=readonly \
+            -backend-config="bucket=$TF_STATE_BUCKET" -backend-config='prefix=prototype/public'
+          terraform -chdir=terraform/public plan -lock-timeout=5m -out=public.tfplan
+          terraform -chdir=terraform/public apply -lock-timeout=5m public.tfplan
+          echo "url=$(terraform -chdir=terraform/public output -raw public_api_url)" >> "$GITHUB_OUTPUT"
+      - name: Verify the public endpoint rejects and accepts correctly
+        env:
+          PUBLIC_API_URL: ${{ steps.public.outputs.url }}
+          PUBLIC_API_TOKEN: ${{ secrets.PUBLIC_API_TOKEN }}
+        run: bash scripts/public-smoke-test.sh
       - name: Runtime failure logs
         if: failure()
         continue-on-error: true
@@ -150,6 +174,7 @@ jobs:
             echo "Region: $GCP_REGION"
             echo '```'
             terraform -chdir=terraform/agent output
+            terraform -chdir=terraform/public output
             echo '```'
-            echo 'The health smoke test passed. Gemini video analysis requires an uploaded video.'
+            echo 'Both smoke tests passed. The public API requires the shared token in an Authorization header.'
           } >> "$GITHUB_STEP_SUMMARY"

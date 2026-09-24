@@ -30,7 +30,7 @@ jobs:
       - name: Validate Terraform without cloud credentials
         run: |
           terraform fmt -check -recursive terraform
-          for directory in terraform/foundation terraform/agent; do
+          for directory in terraform/foundation terraform/agent terraform/public; do
             terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly
             terraform -chdir="$directory" validate
           done

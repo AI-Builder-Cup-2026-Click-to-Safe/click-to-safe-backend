@@ -1,4 +1,9 @@
-"""Private Agent Runtime API. Only authenticated, trusted backend callers may invoke it."""
+"""Video review API.
+
+The same image serves two fronts. On Agent Runtime, Google IAM authenticates
+callers and the app trusts whatever reaches it. On Cloud Run the app is open to
+the internet, so PUBLIC_API=true installs shared-token authentication instead.
+"""
 
 import asyncio
 import json
@@ -17,11 +22,13 @@ from google.cloud import storage
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app import auth
 from app.adk_runner import run_review
 from app.violations import build_report, review_config
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Prototype Video Agent", version="0.1.0")
+auth.install(app)
 VideoType = Literal["video/mp4", "video/webm", "video/quicktime", "video/mpeg"]
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 DEFAULT_MODEL = "gemini-3.8-flash"
