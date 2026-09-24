@@ -80,9 +80,23 @@ def test_public_request_with_a_wrong_token_is_rejected(public_client):
     assert response.status_code == 401
 
 
-def test_health_answers_without_a_token(public_client):
-    # Cloud Run probes before any caller authenticates.
-    assert public_client.get("/healthz").json() == {"status": "ok"}
+@pytest.mark.parametrize("path", ["/healthz", "/health"])
+def test_health_answers_without_a_token(public_client, path):
+    # Cloud Run probes before any caller authenticates. /health exists because
+    # Google's front end answers /healthz itself and never forwards it.
+    assert public_client.get(path).json() == {"status": "ok"}
+
+
+@pytest.mark.parametrize("path", ["/healthz/", "/health/"])
+def test_a_trailing_slash_does_not_turn_health_into_a_401(public_client, path):
+    # Middleware runs before the router, so an exact-match check would reject
+    # the slashed form ahead of the redirect that would have normalised it.
+    assert public_client.get(path, follow_redirects=True).status_code == 200
+
+
+def test_is_public_covers_only_the_health_paths():
+    assert auth.is_public("/health") and auth.is_public("/healthz/")
+    assert not auth.is_public("/") and not auth.is_public("/v1/review")
 
 
 def test_correct_token_reaches_the_route(public_client):

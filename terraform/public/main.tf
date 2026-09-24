@@ -154,7 +154,8 @@ resource "google_cloud_run_v2_service" "public_api" {
         value = var.law_corpus
       }
       startup_probe {
-        http_get { path = "/healthz" }
+        # /healthz is answered by Google's front end and never reaches here.
+        http_get { path = "/health" }
         initial_delay_seconds = 5
         period_seconds        = 5
         failure_threshold     = 12

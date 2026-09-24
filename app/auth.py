@@ -17,8 +17,21 @@ logger = logging.getLogger(__name__)
 
 # Liveness must answer before a token exists, otherwise Cloud Run cannot tell a
 # misconfigured revision from a crashed one and reports neither.
-PUBLIC_PATHS = frozenset({"/healthz"})
+#
+# /healthz carries both paths because Google's front end answers /healthz itself
+# on a Cloud Run domain and never forwards it, so the public probe uses /health.
+PUBLIC_PATHS = frozenset({"/healthz", "/health"})
+_PUBLIC_PATHS_NORMALISED = frozenset(path.rstrip("/") for path in PUBLIC_PATHS)
 SCHEME = "bearer"
+
+
+def is_public(path: str) -> bool:
+    """Match a public path with or without its trailing slash.
+
+    Middleware runs ahead of the router, so a request for `/health/` is judged
+    here before the redirect that would otherwise normalise it away.
+    """
+    return path.rstrip("/") in _PUBLIC_PATHS_NORMALISED
 
 
 def expected_token() -> str:
@@ -50,7 +63,7 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in PUBLIC_PATHS:
+        if is_public(request.url.path):
             return await call_next(request)
         secret = expected_token()
         if not secret:

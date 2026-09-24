@@ -114,7 +114,11 @@ def checked_object(uri: str) -> str:
     return name
 
 
+# Google's front end answers /healthz itself on a Cloud Run domain and never
+# forwards it to the container, so the same check is also served at /health,
+# which reaches the app. Agent Runtime keeps probing /healthz.
 @app.get("/healthz")
+@app.get("/health")
 def health():
     return {"status": "ok"}
 

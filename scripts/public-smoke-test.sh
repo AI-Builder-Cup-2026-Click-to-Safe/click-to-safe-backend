@@ -10,8 +10,9 @@ set -euo pipefail
 fail() { echo "$1" >&2; exit 1; }
 
 # A cold Cloud Run instance answers only after it starts, so allow for a retry.
+# /health, not /healthz: Google's front end answers the latter itself.
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 60 \
-  --retry 5 --retry-delay 5 --retry-all-errors "${PUBLIC_API_URL}/healthz")
+  --retry 5 --retry-delay 5 --retry-all-errors "${PUBLIC_API_URL}/health")
 [[ "$status" == "200" ]] || fail "Health check returned ${status}, expected 200"
 
 status=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 60 \
