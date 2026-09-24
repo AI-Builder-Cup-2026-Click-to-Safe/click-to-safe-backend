@@ -1,6 +1,9 @@
 # Prototype — Gemini video analysis server
 
-GitHub Actions → Docker → Artifact Registry → Terraform → **Agent Runtime**.
+GitHub Actions → Docker → Artifact Registry → Terraform → **Agent Runtime** and
+**Cloud Run**. One image serves both: Agent Runtime for IAM-authenticated backend
+callers, and Cloud Run for public callers holding a shared token — see
+[Public API on Cloud Run](#public-api-on-cloud-run).
 The target project is configured per repository and the runtime region is `us-central1`.
 
 This follows Google's [Terraform agent deployment guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/runtime/use-terraform)
@@ -70,20 +73,24 @@ recreating existing resources.
   container health check.
 - Push to `main` or a manual run: the same CI passes → prepare the state bucket → apply
   the foundation infrastructure → push a SHA-tagged image → apply the runtime by
-  **image digest** → remote health check.
+  **image digest** → remote health check → apply the public Cloud Run service from the
+  same digest → check that it serves health, rejects a wrong token and accepts the
+  right one.
 - Terraform providers and Python dependencies are pinned by lockfile, and GitHub Actions
   are pinned by commit SHA.
-- Terraform state is stored separately under `prototype/foundation` and `prototype/agent`
-  in `${PROJECT_ID}-prototype-tfstate`. Versioning and GCS state locking are enabled, and
-  apply runs never overlap.
+- Terraform state is stored separately under `prototype/foundation`, `prototype/agent`
+  and `prototype/public` in `${PROJECT_ID}-prototype-tfstate`. Versioning and GCS state
+  locking are enabled, and apply runs never overlap.
 - The Docker context allows only application code and dependency files, so credential
   JSON cannot end up in the image.
 - The release image is pushed as a single `linux/amd64` manifest, and the same digest is
   pulled back from the repository to verify that it runs. Build provenance is disabled to
   avoid the attestation index that caused Agent Runtime startup failures.
 - Artifact Registry: `prototype-agents`. Video bucket: `${PROJECT_ID}-prototype-videos`.
-- The runtime runs between 0 and 2 instances with 1 CPU and 1 GiB of memory each. It
-  scales to zero when idle, so the first request may hit a cold start.
+- The runtime runs between 0 and 2 instances with 1 CPU and 1 GiB of memory each. The
+  public Cloud Run service runs between 0 and 4, with 2 CPUs and 2 GiB each and 4
+  concurrent requests per instance, since one review occupies an instance for minutes.
+  Both scale to zero when idle, so the first request may hit a cold start.
 - Videos and images are never deleted automatically. Add a lifecycle policy once a
   retention period is decided.
 
@@ -94,50 +101,212 @@ takes the place of Google IAM. Terraform stores that token in Secret Manager and
 mounts it as `API_TOKEN`; `PUBLIC_API=true` is what installs the check, so the
 Agent Runtime deployment of the identical image stays on IAM.
 
-Every path except `/healthz` requires the token, which Cloud Run's probes need
-before any caller authenticates:
+Read the base URL from the deploy run's Summary (`public_api_url`). It looks like
+`https://prototype-video-api-<hash>-uc.a.run.app`.
+
+### Authentication
+
+Every request carries the shared token, in either form:
 
 ```
 Authorization: Bearer <PUBLIC_API_TOKEN>
+Authorization: <PUBLIC_API_TOKEN>
 ```
 
-A missing or wrong token returns `401`. If the deployment ever lands without the
-token configured, the service returns `503` for everything rather than serving
-the API unauthenticated.
+| Situation | Response |
+| --- | --- |
+| Valid token | the endpoint runs |
+| Missing or wrong token | `401` with `WWW-Authenticate: Bearer` |
+| Deployed without a token configured | `503` on every path |
 
-Read the URL from the deploy run's Summary (`public_api_url`), then run the whole
-flow — upload and review — with no gcloud credentials:
+The `503` is deliberate: an unset token is a deployment fault, and falling open
+would publish the API to anyone. Only `/health` and `/healthz` skip the check,
+because Cloud Run probes them before any caller authenticates.
+
+### Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness. No token required. |
+| `POST` | `/v1/uploads` | Issue a one-off Cloud Storage upload URL. |
+| `POST` | `/v1/review` | Full agent workflow: analyst → lawyer → judge. |
+| `POST` | `/v1/violations` | Single-pass violation list, no legal grounding. |
+| `POST` | `/v1/analyze` | Free-form description of a clip. |
+
+Use `/health` rather than `/healthz` from outside: on a Cloud Run domain Google's
+front end answers `/healthz` itself and never forwards it to the container.
+
+### The upload-then-review flow
+
+A video never passes through Cloud Run. The API issues an upload URL, the client
+PUTs the file straight to Cloud Storage, and the review is asked for by reference.
+That keeps a 100 MiB video clear of Cloud Run's 32 MiB request limit.
+
+```text
+client → POST /v1/uploads → upload_url + video_uri
+client → PUT upload_url → Cloud Storage
+client → POST /v1/review { video_uri } → verdict JSON
+```
+
+The script does all three steps, and needs no gcloud credentials:
 
 ```bash
-export PUBLIC_API_URL=https://...run.app
+export PUBLIC_API_URL=https://prototype-video-api-<hash>-uc.a.run.app
 export PUBLIC_API_TOKEN=...
 ./scripts/public-review.sh dashcam.mp4
 ```
 
-Or call it directly. The upload slot is issued by the API itself, and the PUT that
-follows goes straight to Cloud Storage, which keeps a 100 MiB video clear of Cloud
-Run's 32 MiB request limit:
+#### 1. Request an upload slot
+
+`size_bytes` must be the real byte count, and at most 100 MiB. `mime_type` is one
+of `video/mp4`, `video/webm`, `video/quicktime`, `video/mpeg`.
 
 ```bash
-# 1. Ask for an upload slot, passing the real byte size.
 curl -X POST "$PUBLIC_API_URL/v1/uploads" \
   -H "Authorization: Bearer $PUBLIC_API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"mime_type":"video/mp4","size_bytes":12345678}'
+  -d '{"mime_type":"video/mp4","size_bytes":6933100}'
+```
 
-# 2. PUT the file to the returned upload_url. This request carries no token.
-curl -X PUT "$UPLOAD_URL" -H 'Content-Type: video/mp4' --upload-file dashcam.mp4
+```json
+{
+  "upload_url": "https://storage.googleapis.com/upload/...",
+  "video_uri": "gs://<bucket>/uploads/53cb4d01-...",
+  "method": "PUT",
+  "mime_type": "video/mp4"
+}
+```
 
-# 3. Review the video_uri from step 1. Keep the connection open; a review runs
-#    three agents and takes minutes.
+#### 2. Upload the file
+
+Straight to Cloud Storage. This request carries no token — the URL is itself the
+capability, so treat it as a credential and do not log it.
+
+```bash
+curl -X PUT "$UPLOAD_URL" \
+  -H 'Content-Type: video/mp4' \
+  --upload-file dashcam.mp4
+```
+
+The `Content-Type` must match the `mime_type` from step 1, or the review returns
+`400`.
+
+#### 3. Review the clip
+
+Pass the `video_uri` from step 1. `focus` is optional and is treated as a hint,
+never as an instruction.
+
+```bash
 curl -X POST "$PUBLIC_API_URL/v1/review" \
   -H "Authorization: Bearer $PUBLIC_API_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"video_uri":"gs://.../uploads/...","mime_type":"video/mp4"}'
+  -d '{"video_uri":"gs://<bucket>/uploads/53cb4d01-...","mime_type":"video/mp4"}'
 ```
 
-To rotate the token, update the `PUBLIC_API_TOKEN` secret and re-run the deploy:
-Terraform adds a new Secret Manager version and the revision picks up `latest`.
+This runs three agents over up to three rounds and takes minutes, so keep the
+connection open. The app gives up at 15 minutes and answers `504`; Cloud Run
+would hold the connection for an hour, so the app's limit is the one that
+applies. Set your client's timeout above 15 minutes, not below.
+
+### Review response
+
+```json
+{
+  "video_uri": "gs://<bucket>/uploads/53cb4d01-...",
+  "reportable_count": 1,
+  "reportable": [
+    {
+      "vehicle_id": "white_sedan",
+      "appearance": "White modern sedan with continuous full-width rear light bar",
+      "conduct": "Squeezed past and overtook the ego vehicle on the right ...",
+      "start_seconds": 18.0,
+      "end_seconds": 22.5,
+      "legal_basis": "Road Transport Act 1987 (Act 333), Section 43(1)",
+      "penalty": "A fine of not less than four thousand ringgit ...",
+      "reasoning": "Forcing an overtaking manoeuvre on the right ...",
+      "confidence": 0.95
+    }
+  ],
+  "verdict": "Report the white sedan for careless and inconsiderate driving ...",
+  "rounds_used": 3,
+  "follow_up_exhausted": false,
+  "outstanding_questions": { "video": [], "lawyer": [] },
+  "evidence": {
+    "timeline": [{ "start_seconds": 18.0, "end_seconds": 22.5, "event": "...", "vehicle_ids": ["..."], "road_context": "..." }],
+    "vehicles": [{ "vehicle_id": "white_sedan", "appearance": "...", "is_ego": false, "manoeuvres": [] }],
+    "legal_analysis": { "findings": [], "gaps": [], "summary": "..." }
+  }
+}
+```
+
+`reportable` is what the judge decided is worth reporting; an empty list with
+`reportable_count: 0` means nothing was. `evidence` carries the working the
+verdict rests on: the analyst's timeline and vehicle list, and the lawyer's cited
+provisions, each quoted from the retrieved statute.
+
+`rounds_used` counts the judge's passes. When the judge still wanted more detail
+as the rounds ran out, `follow_up_exhausted` is `true` and
+`outstanding_questions` says what was missing — the verdict then rests on
+incomplete information and deserves a closer look.
+
+### The other two endpoints
+
+Both take a `video_uri` from the same upload step and answer in one model call,
+so they return in seconds rather than minutes. Neither consults the statute
+corpus, so neither cites law: `/v1/review` is the one that does.
+
+`/v1/violations` returns a flat list against a fixed set of categories.
+`min_confidence` drops findings the model is less sure of than the threshold,
+and `filtered_out` reports how many that removed:
+
+```bash
+curl -X POST "$PUBLIC_API_URL/v1/violations" \
+  -H "Authorization: Bearer $PUBLIC_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"video_uri":"gs://<bucket>/uploads/...","min_confidence":0.5}'
+```
+
+```json
+{
+  "video_uri": "gs://<bucket>/uploads/...",
+  "model": "gemini-3.8-flash",
+  "violation_count": 1,
+  "violations": [],
+  "summary": "...",
+  "filtered_out": 2
+}
+```
+
+`/v1/analyze` just describes a clip, with `prompt` steering what to look at:
+
+```bash
+curl -X POST "$PUBLIC_API_URL/v1/analyze" \
+  -H "Authorization: Bearer $PUBLIC_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"video_uri":"gs://<bucket>/uploads/...","prompt":"Describe the road layout."}'
+```
+
+In all three, text spoken or shown inside a video is treated as content to
+describe, never as instructions to follow.
+
+### Errors
+
+| Code | Meaning |
+| --- | --- |
+| `400` | The `video_uri` is outside the configured bucket, or its type does not match the upload. |
+| `401` | Missing or wrong token. |
+| `404` | The upload never finished. |
+| `413` | The stored object exceeds 100 MiB, or is empty. |
+| `422` | The request body is malformed — including a `size_bytes` over 100 MiB — or the model returned nothing usable. |
+| `502` | The upstream model call failed. |
+| `503` | The service is missing its token or bucket configuration. |
+| `504` | The review exceeded 15 minutes. |
+
+### Rotating the token
+
+Update the `PUBLIC_API_TOKEN` secret and re-run the deploy. Terraform adds a new
+Secret Manager version and the revision picks up `latest`. Callers using the old
+token start getting `401` as soon as the new revision serves traffic.
 
 ## Application integration
 
