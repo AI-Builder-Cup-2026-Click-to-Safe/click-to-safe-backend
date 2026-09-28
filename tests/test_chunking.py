@@ -106,3 +106,14 @@ def test_a_blob_nobody_reloaded_has_no_measurable_duration():
     from app.duration import probe_duration
 
     assert probe_duration(Mock(size=None)) is None
+
+
+def test_the_timeout_grows_with_the_clip_but_stays_bounded():
+    from app.main import MAX_REVIEW_TIMEOUT, REVIEW_TIMEOUT, review_timeout
+
+    assert review_timeout(None) == REVIEW_TIMEOUT
+    assert review_timeout(30) == REVIEW_TIMEOUT
+    # A long clip adds a window pass, so it must get more than a short one.
+    assert review_timeout(255) > REVIEW_TIMEOUT
+    assert review_timeout(600) > review_timeout(255)
+    assert review_timeout(7200) <= MAX_REVIEW_TIMEOUT

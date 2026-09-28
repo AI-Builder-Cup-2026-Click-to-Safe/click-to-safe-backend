@@ -24,9 +24,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import auth
 from app.adk_runner import run_review
-from app.chunking import MIN_CHUNKED_DURATION
+from app.chunking import MIN_CHUNKED_DURATION, windows
 from app.duration import probe_duration
-from app.long_video import analyse_long_video
+from app.long_video import MAX_CONCURRENT_WINDOWS, analyse_long_video
 from app.violations import build_report, review_config
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,20 @@ VideoType = Literal["video/mp4", "video/webm", "video/quicktime", "video/mpeg"]
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 DEFAULT_MODEL = "gemini-3.8-flash"
 # The review runs several agents in sequence, so it needs more room than one call.
+# A long clip adds a window-analysis pass in front of that, so the budget grows
+# with the number of windows; Cloud Run allows an hour, which bounds it.
 REVIEW_TIMEOUT = 900
+PER_WINDOW_TIMEOUT = 150
+MAX_REVIEW_TIMEOUT = 3000
+
+
+def review_timeout(duration: float | None) -> int:
+    """Seconds to allow a review of a clip this long."""
+    if not duration or duration <= MIN_CHUNKED_DURATION:
+        return REVIEW_TIMEOUT
+    # Windows run MAX_CONCURRENT_WINDOWS at a time, so cost scales with the waves.
+    waves = -(-len(windows(duration)) // MAX_CONCURRENT_WINDOWS)
+    return min(REVIEW_TIMEOUT + waves * PER_WINDOW_TIMEOUT, MAX_REVIEW_TIMEOUT)
 
 
 class UploadRequest(BaseModel):
@@ -245,22 +258,28 @@ async def review_violations(body: ViolationRequest):
     }
 
 
-async def prepared_analysis(body: ReviewRequest) -> tuple[dict | None, dict]:
+async def clip_duration(body: ReviewRequest) -> float | None:
+    """Length of the uploaded clip, or None when the container does not say."""
+    blob = storage_client().bucket(video_bucket()).blob(checked_object(body.video_uri))
+    try:
+        # A freshly constructed blob carries no metadata, so its size is None and
+        # the ranged read would have nothing to bound itself by.
+        await asyncio.to_thread(blob.reload, timeout=30)
+        return await asyncio.to_thread(probe_duration, blob)
+    except Exception as exc:
+        # Measuring the clip is an optimisation; it must never fail the review.
+        logger.warning("Duration probe failed (%s)", type(exc).__name__)
+        return None
+
+
+async def prepared_analysis(
+    body: ReviewRequest, duration: float | None
+) -> tuple[dict | None, dict]:
     """Analyse a long clip window by window. Returns (merged analysis, report).
 
     Short clips return (None, {}) so the caller runs the ordinary workflow, in
     which the analyst reads the whole clip in one request.
     """
-    blob = storage_client().bucket(video_bucket()).blob(checked_object(body.video_uri))
-    try:
-        # A freshly constructed blob carries no metadata, so its size is None and
-        # the ranged read below would have nothing to bound itself by.
-        await asyncio.to_thread(blob.reload, timeout=30)
-        duration = await asyncio.to_thread(probe_duration, blob)
-    except Exception as exc:
-        # Measuring the clip is an optimisation; it must never fail the review.
-        logger.warning("Duration probe failed (%s)", type(exc).__name__)
-        duration = None
     if duration is None:
         # Without a length there is nothing to window by, so read it in one pass.
         logger.warning("Could not determine the clip's duration; reviewing it in one pass")
@@ -284,10 +303,13 @@ async def review(body: ReviewRequest):
     # Reject foreign URLs before obtaining credentials or calling any service.
     checked_object(body.video_uri)
     await asyncio.to_thread(check_uploaded_video, body)
+    # Measured first: a long clip is read window by window, which needs its own
+    # time on top of the agent loop's.
+    duration = await clip_duration(body)
     try:
         # Three agents over up to three rounds; the cap keeps a stuck review bounded.
-        async with asyncio.timeout(REVIEW_TIMEOUT):
-            prepared, coverage = await prepared_analysis(body)
+        async with asyncio.timeout(review_timeout(duration)):
+            prepared, coverage = await prepared_analysis(body, duration)
             result = await run_review(body.video_uri, body.mime_type, body.focus, prepared=prepared)
             # Say how the clip was read, so a partial window count is visible.
             return {**result, "coverage": coverage} if coverage else result
