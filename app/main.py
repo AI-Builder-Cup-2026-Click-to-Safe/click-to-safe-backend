@@ -289,7 +289,7 @@ async def prepared_analysis(
         return None, {"duration_seconds": round(duration, 1), "windows_analysed": 1}
 
     merged, read, total = await analyse_long_video(
-        model_client(), body.video_uri, body.mime_type, duration, body.focus
+        body.video_uri, body.mime_type, duration, body.focus
     )
     return merged.model_dump(), {
         "duration_seconds": round(duration, 1),
