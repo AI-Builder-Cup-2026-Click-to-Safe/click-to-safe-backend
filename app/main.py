@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Prototype Video Agent", version="0.1.0")
 auth.install(app)
 VideoType = Literal["video/mp4", "video/webm", "video/quicktime", "video/mpeg"]
-MAX_VIDEO_BYTES = 100 * 1024 * 1024
+# Generous next to what the length limit implies — ten minutes at 480p60 encodes
+# to about 90 MiB — so a high-bitrate or higher-resolution recording of a
+# permitted length is not turned away. Uploads go straight to Cloud Storage, so
+# the size never passes through the API, and MAX_CLIP_DURATION is what actually
+# bounds how long a review runs.
+MAX_VIDEO_BYTES = 500 * 1024 * 1024
 DEFAULT_MODEL = "gemini-3.8-flash"
 # The review runs several agents in sequence, so it needs more room than one call.
 # A long clip adds a window-analysis pass in front of that, so the budget grows
@@ -171,7 +176,9 @@ def check_uploaded_video(body: AnalysisRequest | ViolationRequest | ReviewReques
     except NotFound as exc:
         raise HTTPException(404, "Video not found; finish the upload first") from exc
     if not blob.size or blob.size > MAX_VIDEO_BYTES:
-        raise HTTPException(413, "Video must be between 1 byte and 100 MiB")
+        raise HTTPException(
+            413, f"Video must be between 1 byte and {MAX_VIDEO_BYTES // (1024 * 1024)} MiB"
+        )
     if blob.content_type != body.mime_type:
         raise HTTPException(400, "mime_type does not match the uploaded object's content type")
 
@@ -312,9 +319,7 @@ async def review(body: ReviewRequest):
     # rather than started and abandoned at the deadline.
     duration = await clip_duration(body)
     if duration is not None and duration > MAX_CLIP_DURATION:
-        raise HTTPException(
-            413, f"Video must be {MAX_CLIP_DURATION / 60:.0f} minutes or shorter"
-        )
+        raise HTTPException(413, f"Video must be {MAX_CLIP_DURATION / 60:.0f} minutes or shorter")
     try:
         # Three agents over up to three rounds; the cap keeps a stuck review bounded.
         async with asyncio.timeout(review_timeout(duration)):
