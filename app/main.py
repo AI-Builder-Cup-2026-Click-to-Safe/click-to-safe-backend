@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
@@ -310,7 +311,9 @@ async def review(body: ReviewRequest):
         # Three agents over up to three rounds; the cap keeps a stuck review bounded.
         async with asyncio.timeout(review_timeout(duration)):
             prepared, coverage = await prepared_analysis(body, duration)
+            reasoning_started = time.monotonic()
             result = await run_review(body.video_uri, body.mime_type, body.focus, prepared=prepared)
+            logger.info("Lawyer and judge finished in %.0fs", time.monotonic() - reasoning_started)
             # Say how the clip was read, so a partial window count is visible.
             return {**result, "coverage": coverage} if coverage else result
     except TimeoutError as exc:

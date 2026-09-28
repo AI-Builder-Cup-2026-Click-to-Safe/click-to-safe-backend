@@ -12,6 +12,7 @@ video is never cut, re-encoded or re-uploaded.
 import asyncio
 import logging
 import os
+import time
 
 from google.genai import types
 from pydantic import ValidationError
@@ -88,8 +89,13 @@ async def analyse_long_video(
         async with limit:
             return start, await analyse_window(client, video_uri, mime_type, start, end, focus)
 
+    started = time.monotonic()
     results = await asyncio.gather(*(run(start, end) for start, end in spans))
     read = [(offset, report) for offset, report in results if report is not None]
+    # Timing per stage, or a slow review gives no clue which half was slow.
+    logger.info(
+        "Analysed %d/%d windows in %.0fs", len(read), len(spans), time.monotonic() - started
+    )
     if not read:
         raise ValueError("no window of this video could be analysed")
     return merge(read), len(read), len(spans)
