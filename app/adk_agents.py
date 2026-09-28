@@ -222,5 +222,24 @@ def build_review_agent() -> LoopAgent:
     )
 
 
+def build_reasoning_agent() -> LoopAgent:
+    """Lawyer and judge only, for a clip whose analysis is already in state.
+
+    A long clip is analysed window by window before the loop starts, so the
+    timeline is seeded under STATE_VIDEO. Running the analyst again here would
+    put it back in front of the whole video — the case the windows exist to
+    avoid — and its answer would overwrite the merged one.
+    """
+    use_vertex_ai()
+    return LoopAgent(
+        name="review_master",
+        description=(
+            "Reviews an existing dashcam analysis for reportable violations under Malaysian law."
+        ),
+        sub_agents=[build_lawyer_step(), build_judge_agent()],
+        max_iterations=MAX_FOLLOW_UP_ROUNDS + 1,
+    )
+
+
 # ADK tooling discovers a module-level `root_agent`.
 root_agent = build_review_agent

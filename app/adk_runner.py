@@ -17,6 +17,7 @@ from app.adk_agents import (
     STATE_LEGAL,
     STATE_VERDICT,
     STATE_VIDEO,
+    build_reasoning_agent,
     build_review_agent,
 )
 
@@ -40,14 +41,29 @@ def _loads(value: Any) -> Any:
         return value
 
 
-async def run_review(video_uri: str, mime_type: str, focus: str = "") -> dict:
-    """Run analyst -> lawyer -> judge and return the judge's decision."""
-    runner = InMemoryRunner(agent=build_review_agent(), app_name=APP_NAME)
+async def run_review(
+    video_uri: str,
+    mime_type: str,
+    focus: str = "",
+    prepared: dict | None = None,
+) -> dict:
+    """Run the review and return the judge's decision.
+
+    `prepared` is a merged analysis of a long clip, already built window by
+    window. When it is given the analyst is skipped and only the lawyer and
+    judge run, over that analysis; otherwise the whole workflow reads the clip.
+    """
+    chunked = prepared is not None
+    agent = build_reasoning_agent() if chunked else build_review_agent()
+    runner = InMemoryRunner(agent=agent, app_name=APP_NAME)
+
+    state = {"judge_video_questions": focus, "judge_lawyer_questions": ""}
+    if chunked:
+        # Seed what the analyst would otherwise have written this pass.
+        state[STATE_VIDEO] = json.dumps(prepared, ensure_ascii=False)
+
     session = await runner.session_service.create_session(
-        app_name=APP_NAME,
-        user_id="runtime",
-        # Placeholders the agents read on the first pass, before any judge questions.
-        state={"judge_video_questions": focus, "judge_lawyer_questions": ""},
+        app_name=APP_NAME, user_id="runtime", state=state
     )
 
     request = REVIEW_REQUEST
@@ -55,13 +71,13 @@ async def run_review(video_uri: str, mime_type: str, focus: str = "") -> dict:
         # Caller text is quoted as a hint, never as a new instruction.
         request += f"\n\nThe caller asked you to pay attention to: {focus}"
 
-    message = types.Content(
-        role="user",
-        parts=[
-            types.Part.from_uri(file_uri=video_uri, mime_type=mime_type),
-            types.Part.from_text(text=request),
-        ],
-    )
+    parts = [types.Part.from_text(text=request)]
+    if not chunked:
+        # A prepared review must not carry the video: the lawyer's retrieval is
+        # refused in a session whose history holds non-text input.
+        parts.insert(0, types.Part.from_uri(file_uri=video_uri, mime_type=mime_type))
+
+    message = types.Content(role="user", parts=parts)
 
     rounds = 0
     async for event in runner.run_async(
@@ -79,7 +95,8 @@ async def run_review(video_uri: str, mime_type: str, focus: str = "") -> dict:
     if not isinstance(verdict, dict):
         raise ValueError("the judge returned no usable verdict")
 
-    video = _loads(state.get(STATE_VIDEO)) or {}
+    # A chunked review seeds the analysis rather than deriving it in the loop.
+    video = prepared if chunked else (_loads(state.get(STATE_VIDEO)) or {})
     legal = _loads(state.get(STATE_LEGAL))
     reportable = [v for v in verdict.get("reportable", []) if v.get("vehicle_id")]
 
