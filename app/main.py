@@ -253,6 +253,9 @@ async def prepared_analysis(body: ReviewRequest) -> tuple[dict | None, dict]:
     """
     blob = storage_client().bucket(video_bucket()).blob(checked_object(body.video_uri))
     try:
+        # A freshly constructed blob carries no metadata, so its size is None and
+        # the ranged read below would have nothing to bound itself by.
+        await asyncio.to_thread(blob.reload, timeout=30)
         duration = await asyncio.to_thread(probe_duration, blob)
     except Exception as exc:
         # Measuring the clip is an optimisation; it must never fail the review.

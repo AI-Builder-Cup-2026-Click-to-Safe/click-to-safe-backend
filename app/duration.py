@@ -49,6 +49,8 @@ def probe_duration(blob) -> float | None:
     """Duration in seconds, or None when the header does not yield one."""
     size = blob.size or 0
     if not isinstance(size, int) or size <= 0:
+        # Usually a blob nobody reloaded: without a size there is no range to read.
+        logger.warning("Video size is unknown; cannot measure its duration")
         return None
     try:
         head = blob.download_as_bytes(start=0, end=min(PROBE_BYTES, size) - 1, timeout=60)

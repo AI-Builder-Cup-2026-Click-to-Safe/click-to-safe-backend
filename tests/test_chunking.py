@@ -97,3 +97,12 @@ def test_one_vehicle_seen_in_two_windows_becomes_one_entry():
 def test_merging_nothing_gives_an_empty_report():
     merged = merge([])
     assert merged.timeline == [] and merged.vehicles == []
+
+
+def test_a_blob_nobody_reloaded_has_no_measurable_duration():
+    """A freshly constructed blob has size None; the probe must say so, not crash."""
+    from unittest.mock import Mock
+
+    from app.duration import probe_duration
+
+    assert probe_duration(Mock(size=None)) is None
