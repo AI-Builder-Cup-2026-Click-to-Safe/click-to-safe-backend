@@ -20,6 +20,9 @@ WINDOW_SECONDS = 60.0
 OVERLAP_SECONDS = 5.0
 # Below this, one request covers the clip and the chunking path is skipped.
 MIN_CHUNKED_DURATION = 60.0
+# Windows are read one at a time, so the clip's length sets how long a review
+# takes. Ten minutes is what fits comfortably inside the request's own deadline.
+MAX_CLIP_DURATION = 600.0
 
 
 def windows(duration: float) -> list[tuple[float, float]]:

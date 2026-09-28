@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import auth
 from app.adk_runner import run_review
-from app.chunking import MIN_CHUNKED_DURATION, windows
+from app.chunking import MAX_CLIP_DURATION, MIN_CHUNKED_DURATION, windows
 from app.duration import probe_duration
 from app.long_video import MAX_CONCURRENT_WINDOWS, analyse_long_video
 from app.violations import build_report, review_config
@@ -40,7 +40,9 @@ DEFAULT_MODEL = "gemini-3.8-flash"
 # A long clip adds a window-analysis pass in front of that, so the budget grows
 # with the number of windows; Cloud Run allows an hour, which bounds it.
 REVIEW_TIMEOUT = 900
-PER_WINDOW_TIMEOUT = 150
+# Measured at roughly 45s a window against a four minute clip; doubled, so a
+# slow window does not end a review that would otherwise have finished.
+PER_WINDOW_ALLOWANCE = 90
 MAX_REVIEW_TIMEOUT = 3000
 
 
@@ -48,9 +50,10 @@ def review_timeout(duration: float | None) -> int:
     """Seconds to allow a review of a clip this long."""
     if not duration or duration <= MIN_CHUNKED_DURATION:
         return REVIEW_TIMEOUT
-    # Windows run MAX_CONCURRENT_WINDOWS at a time, so cost scales with the waves.
+    # Windows are read MAX_CONCURRENT_WINDOWS at a time, so the cost is the
+    # number of waves, which at a concurrency of one is every window.
     waves = -(-len(windows(duration)) // MAX_CONCURRENT_WINDOWS)
-    return min(REVIEW_TIMEOUT + waves * PER_WINDOW_TIMEOUT, MAX_REVIEW_TIMEOUT)
+    return min(REVIEW_TIMEOUT + waves * PER_WINDOW_ALLOWANCE, MAX_REVIEW_TIMEOUT)
 
 
 class UploadRequest(BaseModel):
@@ -305,8 +308,13 @@ async def review(body: ReviewRequest):
     checked_object(body.video_uri)
     await asyncio.to_thread(check_uploaded_video, body)
     # Measured first: a long clip is read window by window, which needs its own
-    # time on top of the agent loop's.
+    # time on top of the agent loop's, and anything past the limit is refused
+    # rather than started and abandoned at the deadline.
     duration = await clip_duration(body)
+    if duration is not None and duration > MAX_CLIP_DURATION:
+        raise HTTPException(
+            413, f"Video must be {MAX_CLIP_DURATION / 60:.0f} minutes or shorter"
+        )
     try:
         # Three agents over up to three rounds; the cap keeps a stuck review bounded.
         async with asyncio.timeout(review_timeout(duration)):

@@ -117,3 +117,23 @@ def test_the_timeout_grows_with_the_clip_but_stays_bounded():
     assert review_timeout(255) > REVIEW_TIMEOUT
     assert review_timeout(600) > review_timeout(255)
     assert review_timeout(7200) <= MAX_REVIEW_TIMEOUT
+
+
+def test_the_clip_limit_is_ten_minutes():
+    from app.chunking import MAX_CLIP_DURATION
+
+    assert MAX_CLIP_DURATION == 600.0
+
+
+def test_a_ten_minute_clip_still_fits_its_budget():
+    """Sequential windows: the budget must cover every window plus the agent loop."""
+    from app.chunking import MAX_CLIP_DURATION
+    from app.long_video import MAX_CONCURRENT_WINDOWS
+    from app.main import MAX_REVIEW_TIMEOUT, review_timeout
+
+    budget = review_timeout(MAX_CLIP_DURATION)
+    count = len(windows(MAX_CLIP_DURATION))
+    waves = -(-count // MAX_CONCURRENT_WINDOWS)
+    # 45s a window was measured; the budget must beat that with the loop on top.
+    assert budget >= waves * 45 + 600
+    assert budget <= MAX_REVIEW_TIMEOUT
