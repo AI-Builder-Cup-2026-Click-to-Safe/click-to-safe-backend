@@ -95,8 +95,9 @@ async def test_a_long_citation_is_capped(monkeypatch):
 
 def test_a_tracking_fault_does_not_fail_a_verdict(monkeypatch):
     """Even building the client can fail; the review must still be answered."""
-    from fastapi.testclient import TestClient
     from unittest.mock import AsyncMock, Mock
+
+    from fastapi.testclient import TestClient
 
     from app import main
 
