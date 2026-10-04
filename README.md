@@ -296,27 +296,96 @@ describe, never as instructions to follow.
 
 ### Review history
 
-Every finished review is stored and answered with a `review_id`. The history is
-kept in Firestore, which runs no instance of its own, so an idle deployment
+Every finished review is stored and answered with a `review_id`. The history
+lives in Firestore, which runs no instance of its own, so an idle deployment
 costs nothing.
 
+A `/v1/review` response now ends with the id its record was stored under:
+
+```json
+{ "reportable_count": 1, "verdict": "...", "review_id": "c6ec7e580b504ebda1264812676519f3" }
+```
+
+#### List reviews
+
+`limit` defaults to 20 and is capped at 100.
+
 ```bash
-# Newest first. `limit` defaults to 20 and is capped at 100.
 curl "$PUBLIC_API_URL/v1/reviews?limit=20" -H "Authorization: Bearer $PUBLIC_API_TOKEN"
+```
 
-# One review, with the full evidence the verdict rests on.
+```json
+{
+  "reviews": [
+    {
+      "review_id": "c6ec7e580b504ebda1264812676519f3",
+      "created_at": "2026-10-04T12:23:09.250782+00:00",
+      "video_uri": "gs://<bucket>/uploads/88cf2460-...",
+      "reportable_count": 1,
+      "verdict": "Report vehicle_silver_sedan to the authorities under Section 43(1) ...",
+      "provisions": ["Road Transport Act 1987 (Act 333), Section 43(1)"],
+      "duration_seconds": 15.1,
+      "rounds_used": 3
+    }
+  ],
+  "next_before": null
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `review_id` | Pass to `/v1/reviews/{id}` for the full record. |
+| `created_at` | When the review finished. Doubles as the paging cursor. |
+| `reportable_count` | Vehicles the judge decided are worth reporting. |
+| `verdict` | The decision in one line, truncated at 500 characters. |
+| `provisions` | Every provision cited, so a list is scannable without opening records. |
+| `duration_seconds` | Length of the clip, absent when the header gave none. |
+| `rounds_used` | Judge passes, up to three. |
+
+A listing returns these summaries, never the evidence — that is what makes a
+record large, and reading it to draw a list would be paid for on every row.
+
+#### Page through them
+
+Pass the `next_before` value from one page as `before` on the next. It is `null`
+on the last page.
+
+```bash
+curl "$PUBLIC_API_URL/v1/reviews?limit=20&before=2026-10-04T12:23:09.250782+00:00" \
+  -H "Authorization: Bearer $PUBLIC_API_TOKEN"
+```
+
+Paging on a timestamp rather than an offset keeps the cost flat: Firestore
+charges for every document a query walks, and an offset walks the ones it skips.
+The cursor may be passed back exactly as it was handed out — a `+` arriving as a
+space is repaired, so percent-encoding it is optional.
+
+#### Read one review
+
+Returns the whole record: the verdict, the analyst's timeline and vehicles, and
+the lawyer's citations and gaps — the same shape `/v1/review` answered with.
+
+```bash
 curl "$PUBLIC_API_URL/v1/reviews/$REVIEW_ID" -H "Authorization: Bearer $PUBLIC_API_TOKEN"
+```
 
-# Delete one.
+#### Delete one
+
+```bash
 curl -X DELETE "$PUBLIC_API_URL/v1/reviews/$REVIEW_ID" \
   -H "Authorization: Bearer $PUBLIC_API_TOKEN"
 ```
 
-A listing returns summaries — verdict, counts, cited provisions, duration — not
-the evidence, which is what makes a record large. Pass the `next_before` value
-from one page as `before` on the next; it is `null` on the last page. Paging on
-a timestamp rather than an offset keeps the cost flat, since Firestore charges
-for every document a query walks and an offset walks the ones it skips.
+```json
+{ "review_id": "c6ec7e580b504ebda1264812676519f3", "deleted": true }
+```
+
+Both the record and its summary go. A review that was already gone answers
+`404`, rather than reporting a delete that did nothing.
+
+Stored reviews keep whatever the analyst read, licence plates included. The
+history sits behind the same shared token as everything else, but anything
+exported from it carries those plates onward.
 
 ### Errors
 
