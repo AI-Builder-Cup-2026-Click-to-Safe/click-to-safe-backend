@@ -33,10 +33,31 @@ data "google_project" "current" { project_id = var.project_id }
 resource "google_project_service" "apis" {
   for_each = toset([
     "aiplatform.googleapis.com", "artifactregistry.googleapis.com",
-    "storage.googleapis.com", "iam.googleapis.com", "logging.googleapis.com"
+    "storage.googleapis.com", "iam.googleapis.com", "logging.googleapis.com",
+    "firestore.googleapis.com"
   ])
   service            = each.value
   disable_on_destroy = false
+}
+
+# Review history. Firestore in Native mode bills per document read and written
+# with no instance to keep running, so an idle deployment costs nothing and this
+# workload stays inside the free daily allowance.
+resource "google_firestore_database" "history" {
+  project     = var.project_id
+  name        = "(default)"
+  location_id = var.region
+  type        = "FIRESTORE_NATIVE"
+  # Point-in-time recovery and delete protection both add cost or friction a
+  # prototype does not need; history can be rebuilt by re-running a review.
+  depends_on = [google_project_service.apis]
+  lifecycle { prevent_destroy = true }
+}
+
+resource "google_project_iam_member" "runtime_firestore" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = google_service_account.runtime.member
 }
 
 # Generating the Vertex AI service identity also creates the Reasoning Engine service agent.

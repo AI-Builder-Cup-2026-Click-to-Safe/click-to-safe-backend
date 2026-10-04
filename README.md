@@ -132,6 +132,9 @@ because Cloud Run probes them before any caller authenticates.
 | `POST` | `/v1/review` | Full agent workflow: analyst → lawyer → judge. |
 | `POST` | `/v1/violations` | Single-pass violation list, no legal grounding. |
 | `POST` | `/v1/analyze` | Free-form description of a clip. |
+| `GET` | `/v1/reviews` | Stored reviews, newest first. |
+| `GET` | `/v1/reviews/{id}` | One stored review, with its evidence. |
+| `DELETE` | `/v1/reviews/{id}` | Remove a stored review. |
 
 Use `/health` rather than `/healthz` from outside: on a Cloud Run domain Google's
 front end answers `/healthz` itself and never forwards it to the container.
@@ -291,6 +294,30 @@ curl -X POST "$PUBLIC_API_URL/v1/analyze" \
 In all three, text spoken or shown inside a video is treated as content to
 describe, never as instructions to follow.
 
+### Review history
+
+Every finished review is stored and answered with a `review_id`. The history is
+kept in Firestore, which runs no instance of its own, so an idle deployment
+costs nothing.
+
+```bash
+# Newest first. `limit` defaults to 20 and is capped at 100.
+curl "$PUBLIC_API_URL/v1/reviews?limit=20" -H "Authorization: Bearer $PUBLIC_API_TOKEN"
+
+# One review, with the full evidence the verdict rests on.
+curl "$PUBLIC_API_URL/v1/reviews/$REVIEW_ID" -H "Authorization: Bearer $PUBLIC_API_TOKEN"
+
+# Delete one.
+curl -X DELETE "$PUBLIC_API_URL/v1/reviews/$REVIEW_ID" \
+  -H "Authorization: Bearer $PUBLIC_API_TOKEN"
+```
+
+A listing returns summaries — verdict, counts, cited provisions, duration — not
+the evidence, which is what makes a record large. Pass the `next_before` value
+from one page as `before` on the next; it is `null` on the last page. Paging on
+a timestamp rather than an offset keeps the cost flat, since Firestore charges
+for every document a query walks and an offset walks the ones it skips.
+
 ### Errors
 
 | Code | Meaning |
@@ -301,7 +328,7 @@ describe, never as instructions to follow.
 | `413` | The stored object exceeds 500 MiB or ten minutes, or is empty. |
 | `422` | The request body is malformed — including a `size_bytes` over 500 MiB — or the model returned nothing usable. |
 | `502` | The upstream model call failed. |
-| `503` | The service is missing its token or bucket configuration. |
+| `503` | The service is missing its token or bucket configuration, or review history is unreachable. |
 | `504` | The review exceeded 15 minutes. |
 
 ### Rotating the token

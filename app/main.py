@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
@@ -23,7 +24,7 @@ from google.cloud import storage
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app import auth
+from app import auth, history
 from app.adk_runner import run_review
 from app.chunking import MAX_CLIP_DURATION, MIN_CHUNKED_DURATION, windows
 from app.duration import probe_duration
@@ -328,7 +329,11 @@ async def review(body: ReviewRequest):
             result = await run_review(body.video_uri, body.mime_type, body.focus, prepared=prepared)
             logger.info("Lawyer and judge finished in %.0fs", time.monotonic() - reasoning_started)
             # Say how the clip was read, so a partial window count is visible.
-            return {**result, "coverage": coverage} if coverage else result
+            answer = {**result, "coverage": coverage} if coverage else result
+            # Stored after the verdict exists, so a storage fault cannot cost the
+            # caller a review they have already waited minutes for.
+            answer["review_id"] = await history.save(answer)
+            return answer
     except TimeoutError as exc:
         raise HTTPException(504, "Agent review timed out") from exc
     except ValueError as exc:
@@ -343,6 +348,60 @@ async def review(body: ReviewRequest):
             getattr(exc, "code", getattr(exc, "status_code", "?")),
         )
         raise HTTPException(502, "Agent review failed") from exc
+
+
+@app.get("/v1/reviews")
+async def list_reviews(limit: int = history.DEFAULT_PAGE, before: str = ""):
+    """Stored reviews, newest first.
+
+    `before` is the `created_at` of the last row of the previous page. Paging on
+    that rather than an offset keeps the cost flat: Firestore charges for every
+    document a query walks, and an offset walks the ones it skips.
+    """
+    cursor = None
+    if before:
+        try:
+            cursor = datetime.fromisoformat(before)
+        except ValueError as exc:
+            raise HTTPException(422, "before must be an ISO 8601 timestamp") from exc
+    try:
+        rows = await history.recent(limit=limit, before=cursor)
+    except Exception as exc:
+        logger.error("Could not list reviews (%s)", type(exc).__name__)
+        raise HTTPException(503, "Review history is unavailable") from exc
+    return {
+        "reviews": rows,
+        # Hand back the cursor for the next page, or null at the end.
+        "next_before": (
+            rows[-1]["created_at"] if len(rows) >= min(limit, history.MAX_PAGE) else None
+        ),
+    }
+
+
+@app.get("/v1/reviews/{review_id}")
+async def read_review(review_id: str):
+    """One stored review, with the evidence the verdict rests on."""
+    try:
+        record = await history.get(review_id)
+    except Exception as exc:
+        logger.error("Could not read a review (%s)", type(exc).__name__)
+        raise HTTPException(503, "Review history is unavailable") from exc
+    if record is None:
+        raise HTTPException(404, "No such review")
+    return record
+
+
+@app.delete("/v1/reviews/{review_id}")
+async def remove_review(review_id: str):
+    """Delete a stored review. Returns 404 when it was already gone."""
+    try:
+        existed = await history.delete(review_id)
+    except Exception as exc:
+        logger.error("Could not delete a review (%s)", type(exc).__name__)
+        raise HTTPException(503, "Review history is unavailable") from exc
+    if not existed:
+        raise HTTPException(404, "No such review")
+    return {"review_id": review_id, "deleted": True}
 
 
 def analysis_input(body: Invocation):
