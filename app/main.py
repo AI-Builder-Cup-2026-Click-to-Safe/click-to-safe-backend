@@ -29,6 +29,7 @@ from app.adk_runner import run_review
 from app.chunking import MAX_CLIP_DURATION, MIN_CHUNKED_DURATION, windows
 from app.duration import probe_duration
 from app.long_video import MAX_CONCURRENT_WINDOWS, analyse_long_video
+from app.tracking import TRACK_TIMEOUT, track_reported
 from app.violations import build_report, review_config
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,10 @@ def review_timeout(duration: float | None) -> int:
     # Windows are read MAX_CONCURRENT_WINDOWS at a time, so the cost is the
     # number of waves, which at a concurrency of one is every window.
     waves = -(-len(windows(duration)) // MAX_CONCURRENT_WINDOWS)
-    return min(REVIEW_TIMEOUT + waves * PER_WINDOW_ALLOWANCE, MAX_REVIEW_TIMEOUT)
+    # Tracking runs after the verdict, one reported vehicle at a time; allow for
+    # a couple of them rather than letting it push a review past its deadline.
+    tracking = 2 * TRACK_TIMEOUT
+    return min(REVIEW_TIMEOUT + waves * PER_WINDOW_ALLOWANCE + tracking, MAX_REVIEW_TIMEOUT)
 
 
 class UploadRequest(BaseModel):
@@ -330,6 +334,17 @@ async def review(body: ReviewRequest):
             logger.info("Lawyer and judge finished in %.0fs", time.monotonic() - reasoning_started)
             # Say how the clip was read, so a partial window count is visible.
             answer = {**result, "coverage": coverage} if coverage else result
+            # Box each reported vehicle so a player can point at it. Only the
+            # cited seconds are re-read, and a case without a track is still a
+            # case, so nothing here may fail a verdict that already exists —
+            # including building the client, which needs its own configuration.
+            try:
+                answer["tracks"] = await track_reported(
+                    model_client(), body.video_uri, body.mime_type, answer.get("reportable", [])
+                )
+            except Exception as exc:
+                logger.error("Could not track the reported vehicles (%s)", type(exc).__name__)
+                answer["tracks"] = []
             # Stored after the verdict exists, so a storage fault cannot cost the
             # caller a review they have already waited minutes for.
             answer["review_id"] = await history.save(answer)
