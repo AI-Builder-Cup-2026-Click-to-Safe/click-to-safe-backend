@@ -162,7 +162,7 @@ export PUBLIC_API_TOKEN=...
 #### 1. Request an upload slot
 
 `size_bytes` must be the real byte count, and at most 500 MiB. The clip itself must
-be ten minutes or shorter, which `/v1/review` checks once it can read the header.
+be thirty minutes or shorter, which `/v1/review` checks once it can read the header.
 `mime_type` is one
 of `video/mp4`, `video/webm`, `video/quicktime`, `video/mpeg`.
 
@@ -207,6 +207,25 @@ curl -X POST "$PUBLIC_API_URL/v1/review" \
   -H 'Content-Type: application/json' \
   -d '{"video_uri":"gs://<bucket>/uploads/53cb4d01-...","mime_type":"video/mp4"}'
 ```
+
+`window_minutes` chooses how much video the analyst reads at a time, from 1 to
+30, and defaults to 1. A smaller window reads each stretch more closely at the
+cost of more requests and a longer review; a window at least as long as the clip
+sends the whole video to the model in a single unchunked request.
+
+```bash
+# One request over the whole clip, however long it is.
+-d '{"video_uri":"gs://...","window_minutes":30}'
+```
+
+| Window | Requests for a 30-minute clip |
+| --- | --- |
+| 1 minute (default) | 33 |
+| 5 minutes | 7 |
+| 30 minutes | 1, unchunked |
+
+The response reports what was actually done under `coverage`, including
+`window_seconds`.
 
 This runs three agents over up to three rounds and takes minutes, so keep the
 connection open. The app gives up at 15 minutes and answers `504`; Cloud Run
@@ -394,7 +413,7 @@ exported from it carries those plates onward.
 | `400` | The `video_uri` is outside the configured bucket, or its type does not match the upload. |
 | `401` | Missing or wrong token. |
 | `404` | The upload never finished. |
-| `413` | The stored object exceeds 500 MiB or ten minutes, or is empty. |
+| `413` | The stored object exceeds 500 MiB or thirty minutes, or is empty. |
 | `422` | The request body is malformed — including a `size_bytes` over 500 MiB — or the model returned nothing usable. |
 | `502` | The upstream model call failed. |
 | `503` | The service is missing its token or bucket configuration, or review history is unreachable. |
@@ -548,12 +567,12 @@ You can also call `query_url` with `{"class_method":"analyze_video","input":{"vi
 `stream_query` provides the runtime NDJSON contract and currently returns a single result
 once analysis completes.
 
-The sample limits input to MP4/WebM/QuickTime/MPEG, at most **500 MiB** and **ten
+The sample limits input to MP4/WebM/QuickTime/MPEG, at most **500 MiB** and **thirty
 minutes**. A clip past a minute is read in overlapping one-minute windows and merged
 before the lawyer and judge see it, so a review stays synchronous but takes minutes:
 windows are read one at a time, because reading several ranges of one object at once
 made the model hang. Direct browser uploads additionally require bucket CORS
-configuration matching the real app origin. Going beyond ten minutes needs a job
+configuration matching the real app origin. Going beyond thirty minutes needs a job
 queue, a state store, and result polling or push notifications.
 The deployment health check verifies that the server runs; actual Gemini model access and
 video analysis success are verified by a separate video request.

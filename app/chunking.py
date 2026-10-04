@@ -14,33 +14,41 @@ wrong.
 
 from app.agents import TimelineEntry, VideoReport
 
-# A minute is the unit the caller asked for. The overlap only has to be long
-# enough to hold a lane change or an overtake whole.
+# A minute by default. The overlap only has to be long enough to hold a lane
+# change or an overtake whole.
 WINDOW_SECONDS = 60.0
 OVERLAP_SECONDS = 5.0
 # Below this, one request covers the clip and the chunking path is skipped.
 MIN_CHUNKED_DURATION = 60.0
-# Windows are read one at a time, so the clip's length sets how long a review
-# takes. Ten minutes is what fits comfortably inside the request's own deadline.
-MAX_CLIP_DURATION = 600.0
+# Windows are read one at a time, so a smaller window means more requests and a
+# longer review; thirty minutes is the most a request's own deadline allows.
+MAX_CLIP_DURATION = 1800.0
+# A caller may choose the window, between a minute and the whole clip. Asking for
+# a window at least as long as the video reads it in one request, unchunked.
+MIN_WINDOW_SECONDS = 60.0
+MAX_WINDOW_SECONDS = MAX_CLIP_DURATION
 
 
-def windows(duration: float) -> list[tuple[float, float]]:
-    """Cover `duration` with overlapping windows, in order.
+def windows(duration: float, window: float = WINDOW_SECONDS) -> list[tuple[float, float]]:
+    """Cover `duration` with overlapping windows of `window` seconds, in order.
 
     Each window after the first starts OVERLAP_SECONDS before the previous one
     ended. A trailing remainder shorter than the overlap is absorbed into the
     last window rather than becoming a sliver nothing can be judged from.
+
+    A window at least as long as the clip yields one span, so the caller gets a
+    single unchunked request over the whole video.
     """
     if duration <= 0:
         return []
-    if duration <= MIN_CHUNKED_DURATION:
+    window = max(window, MIN_WINDOW_SECONDS)
+    if duration <= MIN_CHUNKED_DURATION or duration <= window:
         return [(0.0, duration)]
 
     spans: list[tuple[float, float]] = []
     start = 0.0
     while start < duration:
-        end = min(start + WINDOW_SECONDS, duration)
+        end = min(start + window, duration)
         spans.append((start, end))
         if end >= duration:
             break

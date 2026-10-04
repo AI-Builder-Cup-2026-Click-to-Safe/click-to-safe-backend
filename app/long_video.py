@@ -20,7 +20,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from app.agents import VideoReport, agent_config
-from app.chunking import merge, windows
+from app.chunking import WINDOW_SECONDS, merge, windows
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +112,14 @@ async def analyse_window(
 
 
 async def analyse_long_video(
-    video_uri: str, mime_type: str, duration: float, focus: str = ""
+    video_uri: str,
+    mime_type: str,
+    duration: float,
+    focus: str = "",
+    window: float = WINDOW_SECONDS,
 ) -> tuple[VideoReport, int, int]:
     """Analyse every window and merge. Returns (report, windows_read, windows_total)."""
-    spans = windows(duration)
+    spans = windows(duration, window)
     limit = asyncio.Semaphore(MAX_CONCURRENT_WINDOWS)
 
     async def run(start: float, end: float):

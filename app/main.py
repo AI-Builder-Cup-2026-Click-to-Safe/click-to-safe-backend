@@ -26,7 +26,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import auth, history
 from app.adk_runner import run_review
-from app.chunking import MAX_CLIP_DURATION, MIN_CHUNKED_DURATION, windows
+from app.chunking import (
+    MAX_CLIP_DURATION,
+    MAX_WINDOW_SECONDS,
+    MIN_CHUNKED_DURATION,
+    MIN_WINDOW_SECONDS,
+    windows,
+)
 from app.duration import probe_duration
 from app.long_video import MAX_CONCURRENT_WINDOWS, analyse_long_video
 from app.tracking import TRACK_TIMEOUT, track_reported
@@ -53,13 +59,14 @@ PER_WINDOW_ALLOWANCE = 90
 MAX_REVIEW_TIMEOUT = 3000
 
 
-def review_timeout(duration: float | None) -> int:
-    """Seconds to allow a review of a clip this long."""
+def review_timeout(duration: float | None, window: float = MIN_WINDOW_SECONDS) -> int:
+    """Seconds to allow a review of a clip this long, read in windows this size."""
     if not duration or duration <= MIN_CHUNKED_DURATION:
         return REVIEW_TIMEOUT
     # Windows are read MAX_CONCURRENT_WINDOWS at a time, so the cost is the
-    # number of waves, which at a concurrency of one is every window.
-    waves = -(-len(windows(duration)) // MAX_CONCURRENT_WINDOWS)
+    # number of waves, which at a concurrency of one is every window. A larger
+    # window means fewer requests, so the budget follows the caller's choice.
+    waves = -(-len(windows(duration, window)) // MAX_CONCURRENT_WINDOWS)
     # Tracking runs after the verdict, a segment at a time. Measured citations
     # are seconds long, so one segment each; this allows for several without
     # letting tracking push a review past its deadline.
@@ -98,6 +105,14 @@ class ReviewRequest(BaseModel):
     video_uri: str = Field(min_length=8, max_length=2048)
     mime_type: VideoType = "video/mp4"
     focus: str = Field(default="", max_length=2000)
+    # How much video the analyst reads at a time. A window at least as long as
+    # the clip reads it in one request, unchunked; a smaller one trades more
+    # requests, and a longer review, for closer attention to each stretch.
+    window_minutes: float = Field(
+        default=MIN_WINDOW_SECONDS / 60,
+        ge=MIN_WINDOW_SECONDS / 60,
+        le=MAX_WINDOW_SECONDS / 60,
+    )
 
 
 class Invocation(BaseModel):
@@ -290,25 +305,32 @@ async def clip_duration(body: ReviewRequest) -> float | None:
 
 
 async def prepared_analysis(
-    body: ReviewRequest, duration: float | None
+    body: ReviewRequest, duration: float | None, window: float
 ) -> tuple[dict | None, dict]:
     """Analyse a long clip window by window. Returns (merged analysis, report).
 
-    Short clips return (None, {}) so the caller runs the ordinary workflow, in
-    which the analyst reads the whole clip in one request.
+    Returns (None, …) when one request covers the clip — because it is short, or
+    because the caller asked for a window at least as long as it — so the
+    ordinary workflow reads the whole video in one pass.
     """
     if duration is None:
         # Without a length there is nothing to window by, so read it in one pass.
         logger.warning("Could not determine the clip's duration; reviewing it in one pass")
         return None, {}
-    if duration <= MIN_CHUNKED_DURATION:
-        return None, {"duration_seconds": round(duration, 1), "windows_analysed": 1}
+    if duration <= MIN_CHUNKED_DURATION or duration <= window:
+        return None, {
+            "duration_seconds": round(duration, 1),
+            "window_seconds": round(window),
+            "windows_analysed": 1,
+            "windows_total": 1,
+        }
 
     merged, read, total = await analyse_long_video(
-        body.video_uri, body.mime_type, duration, body.focus
+        body.video_uri, body.mime_type, duration, body.focus, window
     )
     return merged.model_dump(), {
         "duration_seconds": round(duration, 1),
+        "window_seconds": round(window),
         "windows_analysed": read,
         "windows_total": total,
     }
@@ -326,10 +348,11 @@ async def review(body: ReviewRequest):
     duration = await clip_duration(body)
     if duration is not None and duration > MAX_CLIP_DURATION:
         raise HTTPException(413, f"Video must be {MAX_CLIP_DURATION / 60:.0f} minutes or shorter")
+    window = body.window_minutes * 60
     try:
         # Three agents over up to three rounds; the cap keeps a stuck review bounded.
-        async with asyncio.timeout(review_timeout(duration)):
-            prepared, coverage = await prepared_analysis(body, duration)
+        async with asyncio.timeout(review_timeout(duration, window)):
+            prepared, coverage = await prepared_analysis(body, duration, window)
             reasoning_started = time.monotonic()
             result = await run_review(body.video_uri, body.mime_type, body.focus, prepared=prepared)
             logger.info("Lawyer and judge finished in %.0fs", time.monotonic() - reasoning_started)

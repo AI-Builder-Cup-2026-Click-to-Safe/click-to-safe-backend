@@ -119,10 +119,10 @@ def test_the_timeout_grows_with_the_clip_but_stays_bounded():
     assert review_timeout(7200) <= MAX_REVIEW_TIMEOUT
 
 
-def test_the_clip_limit_is_ten_minutes():
+def test_the_clip_limit_is_thirty_minutes():
     from app.chunking import MAX_CLIP_DURATION
 
-    assert MAX_CLIP_DURATION == 600.0
+    assert MAX_CLIP_DURATION == 1800.0
 
 
 def test_a_ten_minute_clip_still_fits_its_budget():
@@ -137,3 +137,35 @@ def test_a_ten_minute_clip_still_fits_its_budget():
     # 45s a window was measured; the budget must beat that with the loop on top.
     assert budget >= waves * 45 + 600
     assert budget <= MAX_REVIEW_TIMEOUT
+
+
+def test_a_caller_can_choose_a_longer_window():
+    """A longer window means far fewer requests, so a far quicker review."""
+    assert len(windows(600, window=300)) < len(windows(600))
+    assert len(windows(600)) == 11
+
+
+def test_a_window_as_long_as_the_clip_is_one_unchunked_request():
+    # The whole video goes to the model in a single call.
+    assert windows(1800, window=1800) == [(0.0, 1800)]
+    assert windows(600, window=1800) == [(0.0, 600)]
+
+
+def test_a_window_below_the_minimum_is_raised_to_it():
+    from app.chunking import MIN_WINDOW_SECONDS
+
+    # Asking for ten-second windows would make a long clip hundreds of requests.
+    assert windows(600, window=10) == windows(600, window=MIN_WINDOW_SECONDS)
+
+
+def test_a_larger_window_still_covers_the_whole_clip():
+    spans = windows(1800, window=300)
+    assert spans[0][0] == 0.0 and spans[-1][1] == 1800
+    assert all(spans[i + 1][0] <= spans[i][1] for i in range(len(spans) - 1))
+
+
+def test_the_budget_shrinks_when_the_window_grows():
+    from app.main import review_timeout
+
+    # Fewer requests to make, so less time needed.
+    assert review_timeout(1800, window=1800) < review_timeout(1800, window=60)
