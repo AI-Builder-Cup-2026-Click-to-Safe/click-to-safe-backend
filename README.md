@@ -218,11 +218,15 @@ sends the whole video to the model in a single unchunked request.
 -d '{"video_uri":"gs://...","window_minutes":30}'
 ```
 
-| Window | Requests for a 30-minute clip |
-| --- | --- |
-| 1 minute (default) | 33 |
-| 5 minutes | 7 |
-| 30 minutes | 1, unchunked |
+| Window | Requests for a 30-minute clip | |
+| --- | --- | --- |
+| 1 minute (default) | 33 | refused: too many to finish in one request |
+| 5 minutes | 7 | |
+| 30 minutes | 1, unchunked | |
+
+A combination that cannot finish inside a single request is refused with `422`
+before anything is spent, rather than timing out twenty minutes later. The
+default window suits clips of a few minutes; a longer video needs a larger one.
 
 The response reports what was actually done under `coverage`, including
 `window_seconds`.

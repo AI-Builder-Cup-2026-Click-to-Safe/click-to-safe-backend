@@ -169,3 +169,21 @@ def test_the_budget_shrinks_when_the_window_grows():
 
     # Fewer requests to make, so less time needed.
     assert review_timeout(1800, window=1800) < review_timeout(1800, window=60)
+
+
+def test_a_clip_that_cannot_finish_in_time_is_refused_up_front():
+    """Twenty minutes of waiting then a timeout is worse than an immediate 422."""
+    from app.main import windows_affordable
+
+    # Half an hour read a minute at a time is thirty-three sequential calls.
+    assert not windows_affordable(1800, 60)
+    # The same clip in larger windows fits.
+    assert windows_affordable(1800, 300)
+    assert windows_affordable(1800, 1800)
+
+
+def test_a_short_clip_is_always_affordable():
+    from app.main import windows_affordable
+
+    assert windows_affordable(30, 60)
+    assert windows_affordable(None, 60)

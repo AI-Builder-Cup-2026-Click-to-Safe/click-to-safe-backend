@@ -53,10 +53,25 @@ DEFAULT_MODEL = "gemini-3.8-flash"
 # A long clip adds a window-analysis pass in front of that, so the budget grows
 # with the number of windows; Cloud Run allows an hour, which bounds it.
 REVIEW_TIMEOUT = 900
-# Measured at roughly 45s a window against a four minute clip; doubled, so a
-# slow window does not end a review that would otherwise have finished.
-PER_WINDOW_ALLOWANCE = 90
+# Each window costs its own read, and then costs again downstream: more windows
+# make a longer merged timeline, which the lawyer and judge must reason over for
+# up to three rounds. A four minute clip at the default window measured past
+# 1700s against an allowance of 90, so the figure covers both halves.
+PER_WINDOW_ALLOWANCE = 180
 MAX_REVIEW_TIMEOUT = 3000
+
+
+def windows_affordable(duration: float | None, window: float) -> bool:
+    """Whether this clip can be read in windows this size inside one request.
+
+    Each window costs a read and then costs again downstream, so a long clip at
+    a small window needs more time than a request is allowed. Saying so up front
+    beats timing out twenty minutes in.
+    """
+    if not duration or duration <= MIN_CHUNKED_DURATION or duration <= window:
+        return True
+    needed = -(-len(windows(duration, window)) // MAX_CONCURRENT_WINDOWS) * PER_WINDOW_ALLOWANCE
+    return REVIEW_TIMEOUT + needed + 2 * TRACK_TIMEOUT <= MAX_REVIEW_TIMEOUT
 
 
 def review_timeout(duration: float | None, window: float = MIN_WINDOW_SECONDS) -> int:
@@ -349,6 +364,13 @@ async def review(body: ReviewRequest):
     if duration is not None and duration > MAX_CLIP_DURATION:
         raise HTTPException(413, f"Video must be {MAX_CLIP_DURATION / 60:.0f} minutes or shorter")
     window = body.window_minutes * 60
+    if not windows_affordable(duration, window):
+        raise HTTPException(
+            422,
+            f"A {duration / 60:.0f} minute video cannot be read in "
+            f"{body.window_minutes:g} minute windows within one request. "
+            f"Use a larger window_minutes.",
+        )
     try:
         # Three agents over up to three rounds; the cap keeps a stuck review bounded.
         async with asyncio.timeout(review_timeout(duration, window)):
