@@ -152,6 +152,7 @@ async def track_vehicle(client, video_uri: str, mime_type: str, vehicle: dict) -
         logger.error("Could not track %s (%s)", vehicle.get("vehicle_id", "?"), type(exc).__name__)
         return None
     if not result.text:
+        logger.error("Tracking returned no text for %s", vehicle.get("vehicle_id", "?"))
         return None
     try:
         raw = RawTrack.model_validate_json(result.text)
@@ -161,8 +162,18 @@ async def track_vehicle(client, video_uri: str, mime_type: str, vehicle: dict) -
 
     frames = [f for f in (to_track_frame(fr, start) for fr in raw.frames) if f]
     if not frames:
+        # Distinguish "the model placed nothing" from "every box was rejected":
+        # the first is a prompt or model problem, the second a coordinate one.
+        logger.error(
+            "No usable box for %s (%d returned, all rejected)"
+            if raw.frames
+            else "No box returned for %s (%d)",
+            vehicle.get("vehicle_id", "?"),
+            len(raw.frames),
+        )
         return None
     frames.sort(key=lambda f: f["atSeconds"])
+    logger.info("Tracked %s across %d frames", vehicle.get("vehicle_id", "?"), len(frames))
     return {"vehicleTrackId": vehicle.get("vehicle_id", ""), "frames": frames}
 
 
