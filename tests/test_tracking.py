@@ -1,6 +1,14 @@
 import pytest
 
-from app.tracking import MAX_SAMPLES, RawFrame, to_track_frame, track_request, track_vehicle
+from app.tracking import (
+    MAX_TRACKED_SECONDS,
+    SEGMENT_SECONDS,
+    RawFrame,
+    segments,
+    to_track_frame,
+    track_request,
+    track_vehicle,
+)
 
 
 def frame(box, at=0.0):
@@ -75,22 +83,43 @@ async def test_a_tracking_failure_leaves_the_case_intact(monkeypatch):
     assert await track_vehicle(Broken(), "gs://b/uploads/a", "video/mp4", vehicle) is None
 
 
+def test_a_short_citation_is_one_segment():
+    assert segments(10, 15) == [(10, 15)]
+
+
+def test_the_whole_cited_span_is_covered():
+    spans = segments(0, 50)
+    assert spans[0][0] == 0 and spans[-1][1] == 50
+    # No gap and no overlap: every second of the citation is asked for once.
+    assert all(spans[i][1] == spans[i + 1][0] for i in range(len(spans) - 1))
+
+
+def test_no_segment_is_longer_than_one_request_should_be():
+    assert all(end - start <= SEGMENT_SECONDS for start, end in segments(0, 95))
+
+
+def test_an_absurd_citation_is_bounded():
+    spans = segments(0, 99999)
+    assert spans[-1][1] == MAX_TRACKED_SECONDS
+
+
 @pytest.mark.anyio
-async def test_a_long_citation_is_capped(monkeypatch):
-    seen = {}
+async def test_every_segment_of_a_long_citation_is_requested(monkeypatch):
+    asked = []
 
     class Fake:
         class aio:
             class models:
                 @staticmethod
                 async def generate_content(contents=None, **kwargs):
-                    seen["end"] = contents[0].video_metadata.end_offset
-                    raise RuntimeError("stop here; the span is what matters")
+                    meta = contents[0].video_metadata
+                    asked.append((meta.start_offset, meta.end_offset))
+                    raise RuntimeError("the spans asked for are what matter")
 
     await track_vehicle(
-        Fake(), "gs://b/uploads/a", "video/mp4", {"start_seconds": 0, "end_seconds": 9999}
+        Fake(), "gs://b/uploads/a", "video/mp4", {"start_seconds": 0, "end_seconds": 50}
     )
-    assert seen["end"] == f"{MAX_SAMPLES:.0f}s"
+    assert asked == [("0s", "20s"), ("20s", "40s"), ("40s", "50s")]
 
 
 def test_a_tracking_fault_does_not_fail_a_verdict(monkeypatch):

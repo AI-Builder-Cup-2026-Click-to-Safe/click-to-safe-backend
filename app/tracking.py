@@ -27,10 +27,16 @@ def _tracking_model() -> str:
     return os.getenv("VISION_MODEL", os.getenv("MODEL", "gemini-3.8-flash"))
 
 
-# One box a second reads as smooth motion in a player without asking the model
-# for more points than it can place accurately.
+# One box a second. A player interpolates between them, so this reads as smooth
+# motion without asking the model for more points than it can place accurately.
 SAMPLES_PER_SECOND = 1
-MAX_SAMPLES = 30
+# The whole cited span is covered, in segments of this length. A long span asked
+# for in one request comes back with seconds missing — the model places a handful
+# of boxes and skips the rest — so it is split and the pieces joined.
+SEGMENT_SECONDS = 20.0
+# A citation longer than this is covered to here and no further. It exists only
+# so one absurd span cannot run a review out of time; real citations are seconds.
+MAX_TRACKED_SECONDS = 180.0
 TRACK_TIMEOUT = 180
 GEMINI_SCALE = 1000.0
 
@@ -117,19 +123,10 @@ def track_request(vehicle: dict) -> str:
     return request
 
 
-async def track_vehicle(client, video_uri: str, mime_type: str, vehicle: dict) -> dict | None:
-    """Box one reported vehicle across the seconds it was reported for.
-
-    Returns a track in the front end's shape, or None when the vehicle could not
-    be located — a case without a track is still a valid case.
-    """
-    start = float(vehicle.get("start_seconds", 0))
-    end = float(vehicle.get("end_seconds", 0))
-    if end <= start:
-        return None
-    # Cap the span so one long citation cannot turn into a huge request.
-    end = min(end, start + MAX_SAMPLES / SAMPLES_PER_SECOND)
-
+async def track_segment(
+    client, video_uri: str, mime_type: str, vehicle: dict, start: float, end: float
+) -> list[dict]:
+    """Box one vehicle across one segment. Returns the frames it could place."""
     part = types.Part(
         file_data=types.FileData(file_uri=video_uri, mime_type=mime_type),
         video_metadata=types.VideoMetadata(start_offset=f"{start:.0f}s", end_offset=f"{end:.0f}s"),
@@ -149,32 +146,70 @@ async def track_vehicle(client, video_uri: str, mime_type: str, vehicle: dict) -
             timeout=TRACK_TIMEOUT,
         )
     except Exception as exc:
+        # One segment failing costs its seconds, not the whole track.
         logger.error("Could not track %s (%s)", vehicle.get("vehicle_id", "?"), type(exc).__name__)
-        return None
+        return []
     if not result.text:
         logger.error("Tracking returned no text for %s", vehicle.get("vehicle_id", "?"))
-        return None
+        return []
     try:
         raw = RawTrack.model_validate_json(result.text)
     except ValidationError:
         logger.error("Tracking returned an unexpected shape")
-        return None
+        return []
 
     frames = [f for f in (to_track_frame(fr, start) for fr in raw.frames) if f]
-    if not frames:
-        # Distinguish "the model placed nothing" from "every box was rejected":
-        # the first is a prompt or model problem, the second a coordinate one.
+    if not frames and raw.frames:
+        # Boxes came back but none survived: a coordinate problem, not a prompt one.
         logger.error(
-            "No usable box for %s (%d returned, all rejected)"
-            if raw.frames
-            else "No box returned for %s (%d)",
-            vehicle.get("vehicle_id", "?"),
-            len(raw.frames),
+            "No usable box for %s (%d rejected)", vehicle.get("vehicle_id", "?"), len(raw.frames)
         )
+    return frames
+
+
+def segments(start: float, end: float) -> list[tuple[float, float]]:
+    """Cover start..end in request-sized pieces, in order."""
+    end = min(end, start + MAX_TRACKED_SECONDS)
+    spans = []
+    at = start
+    while at < end:
+        spans.append((at, min(at + SEGMENT_SECONDS, end)))
+        at += SEGMENT_SECONDS
+    return spans
+
+
+async def track_vehicle(client, video_uri: str, mime_type: str, vehicle: dict) -> dict | None:
+    """Box one reported vehicle across every second it was reported for.
+
+    The whole cited span is covered, a segment at a time, because asking for a
+    long span in one request comes back with seconds missing. Returns a track in
+    the front end's shape, or None when the vehicle could not be located at all —
+    a case without a track is still a valid case.
+    """
+    start = float(vehicle.get("start_seconds", 0))
+    end = float(vehicle.get("end_seconds", 0))
+    if end <= start:
         return None
-    frames.sort(key=lambda f: f["atSeconds"])
-    logger.info("Tracked %s across %d frames", vehicle.get("vehicle_id", "?"), len(frames))
-    return {"vehicleTrackId": vehicle.get("vehicle_id", ""), "frames": frames}
+
+    frames: list[dict] = []
+    for at, until in segments(start, end):
+        # Sequential, as the windows are: several ranges of one object read at
+        # once made the model hang.
+        frames.extend(await track_segment(client, video_uri, mime_type, vehicle, at, until))
+
+    if not frames:
+        logger.error("No box placed for %s", vehicle.get("vehicle_id", "?"))
+        return None
+    # One box per second: a segment boundary can yield two for the same second.
+    unique = {round(f["atSeconds"]): f for f in sorted(frames, key=lambda f: f["atSeconds"])}
+    ordered = sorted(unique.values(), key=lambda f: f["atSeconds"])
+    logger.info(
+        "Tracked %s across %.0fs with %d frames",
+        vehicle.get("vehicle_id", "?"),
+        end - start,
+        len(ordered),
+    )
+    return {"vehicleTrackId": vehicle.get("vehicle_id", ""), "frames": ordered}
 
 
 async def track_reported(

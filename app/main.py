@@ -60,8 +60,9 @@ def review_timeout(duration: float | None) -> int:
     # Windows are read MAX_CONCURRENT_WINDOWS at a time, so the cost is the
     # number of waves, which at a concurrency of one is every window.
     waves = -(-len(windows(duration)) // MAX_CONCURRENT_WINDOWS)
-    # Tracking runs after the verdict, one reported vehicle at a time; allow for
-    # a couple of them rather than letting it push a review past its deadline.
+    # Tracking runs after the verdict, a segment at a time. Measured citations
+    # are seconds long, so one segment each; this allows for several without
+    # letting tracking push a review past its deadline.
     tracking = 2 * TRACK_TIMEOUT
     return min(REVIEW_TIMEOUT + waves * PER_WINDOW_ALLOWANCE + tracking, MAX_REVIEW_TIMEOUT)
 
