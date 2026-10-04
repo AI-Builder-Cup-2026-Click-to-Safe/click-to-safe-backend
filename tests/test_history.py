@@ -194,3 +194,9 @@ def test_reading_an_unknown_review_is_a_404(client, db):
 
 def test_a_malformed_cursor_is_rejected(client, db):
     assert client.get("/v1/reviews?before=not-a-date").status_code == 422
+
+
+def test_a_cursor_whose_plus_became_a_space_still_works(client, db):
+    """A query string decodes "+" as a space, so an offset arrives broken."""
+    assert client.get("/v1/reviews?before=2026-10-04T12:09:54.711370 00:00").status_code == 200
+    assert client.get("/v1/reviews?before=2026-10-04T12:09:54.711370%2B00:00").status_code == 200

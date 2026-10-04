@@ -360,8 +360,11 @@ async def list_reviews(limit: int = history.DEFAULT_PAGE, before: str = ""):
     """
     cursor = None
     if before:
+        # A UTC offset ends in "+00:00", and a query string decodes "+" as a
+        # space, so a cursor pasted back verbatim arrives with its offset broken.
+        # Repair that rather than making every caller percent-encode the value.
         try:
-            cursor = datetime.fromisoformat(before)
+            cursor = datetime.fromisoformat(before.replace(" ", "+"))
         except ValueError as exc:
             raise HTTPException(422, "before must be an ISO 8601 timestamp") from exc
     try:
