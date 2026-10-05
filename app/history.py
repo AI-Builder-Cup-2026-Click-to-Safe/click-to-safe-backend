@@ -13,7 +13,7 @@ reviews then reads a hundred small documents instead of a hundred large ones.
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
 from google.cloud.firestore import AsyncClient, Query
@@ -38,6 +38,7 @@ def summarise(review_id: str, result: dict, created_at: datetime) -> dict:
         "review_id": review_id,
         "created_at": created_at,
         "video_uri": result.get("video_uri", ""),
+        "annotated_video_uri": result.get("annotated_video_uri"),
         "reportable_count": result.get("reportable_count", 0),
         "verdict": result.get("verdict", "")[:500],
         # The provisions cited, so a list can be scanned without opening records.
@@ -104,3 +105,43 @@ async def delete(review_id: str) -> bool:
     await db.collection(RECORDS).document(review_id).delete()
     await db.collection(SUMMARIES).document(review_id).delete()
     return True
+
+
+# Long enough to watch a clip and come back to it, short enough that a link
+# copied out of a response does not stay live indefinitely.
+PLAYBACK_URL_TTL = timedelta(hours=6)
+
+
+def playable(uri: str | None) -> str | None:
+    """A browser-playable URL for a gs:// object, or None.
+
+    The bucket is private, so a signed URL is what lets a player fetch the
+    video at all. It is minted per read rather than stored, because it expires.
+    """
+    if not uri or not uri.startswith("gs://"):
+        return None
+    bucket_name, _, object_name = uri.removeprefix("gs://").partition("/")
+    if not object_name:
+        return None
+    try:
+        from google.cloud import storage
+
+        blob = (
+            storage.Client(project=os.environ["APP_PROJECT_ID"])
+            .bucket(bucket_name)
+            .blob(object_name)
+        )
+        return blob.generate_signed_url(expiration=PLAYBACK_URL_TTL, method="GET", version="v4")
+    except Exception as exc:
+        # A record without a playable link is still a record.
+        logger.error("Could not sign a playback URL (%s)", type(exc).__name__)
+        return None
+
+
+def with_playback(record: dict) -> dict:
+    """Add the URLs a player needs, leaving the stored gs:// URIs in place."""
+    return {
+        **record,
+        "original_video_url": playable(record.get("video_uri")),
+        "annotated_video_url": playable(record.get("annotated_video_uri")),
+    }

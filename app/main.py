@@ -24,7 +24,7 @@ from google.cloud import storage
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app import auth, history
+from app import auth, history, overlay
 from app.adk_runner import run_review
 from app.chunking import (
     MAX_CLIP_DURATION,
@@ -35,6 +35,7 @@ from app.chunking import (
 )
 from app.duration import probe_duration
 from app.long_video import MAX_CONCURRENT_WINDOWS, analyse_long_video
+from app.overlay import RENDER_TIMEOUT
 from app.tracking import TRACK_TIMEOUT, track_reported
 from app.violations import build_report, review_config
 
@@ -85,8 +86,9 @@ def review_timeout(duration: float | None, window: float = MIN_WINDOW_SECONDS) -
     # Tracking runs after the verdict, a segment at a time. Measured citations
     # are seconds long, so one segment each; this allows for several without
     # letting tracking push a review past its deadline.
-    tracking = 2 * TRACK_TIMEOUT
-    return min(REVIEW_TIMEOUT + waves * PER_WINDOW_ALLOWANCE + tracking, MAX_REVIEW_TIMEOUT)
+    # Tracking, then rendering the annotated copy, both run after the verdict.
+    after_verdict = 2 * TRACK_TIMEOUT + RENDER_TIMEOUT
+    return min(REVIEW_TIMEOUT + waves * PER_WINDOW_ALLOWANCE + after_verdict, MAX_REVIEW_TIMEOUT)
 
 
 class UploadRequest(BaseModel):
@@ -391,6 +393,16 @@ async def review(body: ReviewRequest):
             except Exception as exc:
                 logger.error("Could not track the reported vehicles (%s)", type(exc).__name__)
                 answer["tracks"] = []
+            # Render a copy carrying the boxes, for a reviewer who needs to send
+            # the evidence on. Like tracking, it may fail without costing the
+            # verdict: the case keeps its tracks and a player can draw them.
+            try:
+                answer["annotated_video_uri"] = await overlay.render(
+                    body.video_uri, answer["tracks"]
+                )
+            except Exception as exc:
+                logger.error("Could not annotate the clip (%s)", type(exc).__name__)
+                answer["annotated_video_uri"] = None
             # Stored after the verdict exists, so a storage fault cannot cost the
             # caller a review they have already waited minutes for.
             answer["review_id"] = await history.save(answer)
@@ -434,7 +446,8 @@ async def list_reviews(limit: int = history.DEFAULT_PAGE, before: str = ""):
         logger.error("Could not list reviews (%s)", type(exc).__name__)
         raise HTTPException(503, "Review history is unavailable") from exc
     return {
-        "reviews": rows,
+        # Signed per read, since a playback link expires.
+        "reviews": [history.with_playback(row) for row in rows],
         # Hand back the cursor for the next page, or null at the end.
         "next_before": (
             rows[-1]["created_at"] if len(rows) >= min(limit, history.MAX_PAGE) else None
@@ -452,7 +465,7 @@ async def read_review(review_id: str):
         raise HTTPException(503, "Review history is unavailable") from exc
     if record is None:
         raise HTTPException(404, "No such review")
-    return record
+    return history.with_playback(record)
 
 
 @app.delete("/v1/reviews/{review_id}")

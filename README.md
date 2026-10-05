@@ -358,6 +358,8 @@ curl "$PUBLIC_API_URL/v1/reviews?limit=20" -H "Authorization: Bearer $PUBLIC_API
 | Field | Meaning |
 | --- | --- |
 | `review_id` | Pass to `/v1/reviews/{id}` for the full record. |
+| `original_video_url` | Signed link to the uploaded clip, playable in a browser. |
+| `annotated_video_url` | Signed link to the same clip with the boxes drawn on, or `null`. |
 | `created_at` | When the review finished. Doubles as the paging cursor. |
 | `reportable_count` | Vehicles the judge decided are worth reporting. |
 | `verdict` | The decision in one line, truncated at 500 characters. |
@@ -367,6 +369,31 @@ curl "$PUBLIC_API_URL/v1/reviews?limit=20" -H "Authorization: Bearer $PUBLIC_API
 
 A listing returns these summaries, never the evidence — that is what makes a
 record large, and reading it to draw a list would be paid for on every row.
+
+#### The annotated video
+
+When the judge reports a vehicle, its position is tracked once a second across
+the seconds cited and the boxes are rendered onto a copy of the clip. A stored
+review carries both videos as signed links, minted per read because they expire
+after six hours:
+
+```json
+{
+  "original_video_url": "https://storage.googleapis.com/...",
+  "annotated_video_url": "https://storage.googleapis.com/...",
+  "tracks": [
+    {
+      "vehicleTrackId": "white_mpv",
+      "frames": [{ "atSeconds": 10.0, "x": 0.715, "y": 0.367, "width": 0.285, "height": 0.437 }]
+    }
+  ]
+}
+```
+
+`annotated_video_url` is `null` when nothing was reportable, or when the render
+did not finish — a case keeps its verdict and its `tracks` either way, and a
+player can draw those boxes itself. Box coordinates are fractions of the frame,
+so they scale to whatever size the video is displayed at.
 
 #### Page through them
 
