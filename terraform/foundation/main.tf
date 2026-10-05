@@ -34,7 +34,9 @@ resource "google_project_service" "apis" {
   for_each = toset([
     "aiplatform.googleapis.com", "artifactregistry.googleapis.com",
     "storage.googleapis.com", "iam.googleapis.com", "logging.googleapis.com",
-    "firestore.googleapis.com"
+    "firestore.googleapis.com",
+    # Signing a URL without a key file goes through IAM's signBlob.
+    "iamcredentials.googleapis.com"
   ])
   service            = each.value
   disable_on_destroy = false
@@ -52,6 +54,14 @@ resource "google_firestore_database" "history" {
   # prototype does not need; history can be rebuilt by re-running a review.
   depends_on = [google_project_service.apis]
   lifecycle { prevent_destroy = true }
+}
+
+# Signing a playback URL without a key file means asking IAM to sign on the
+# account's behalf, which is a permission the account needs over itself.
+resource "google_service_account_iam_member" "runtime_signs_its_own_urls" {
+  service_account_id = google_service_account.runtime.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = google_service_account.runtime.member
 }
 
 resource "google_project_iam_member" "runtime_firestore" {

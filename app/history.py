@@ -124,6 +124,8 @@ def playable(uri: str | None) -> str | None:
     if not object_name:
         return None
     try:
+        import google.auth
+        import google.auth.transport.requests
         from google.cloud import storage
 
         blob = (
@@ -131,10 +133,22 @@ def playable(uri: str | None) -> str | None:
             .bucket(bucket_name)
             .blob(object_name)
         )
-        return blob.generate_signed_url(expiration=PLAYBACK_URL_TTL, method="GET", version="v4")
+        # On Cloud Run there is no key file to sign with: credentials come from
+        # the metadata server. Signing is delegated to IAM instead, which needs
+        # the account's own email and a live access token.
+        credentials, _ = google.auth.default()
+        credentials.refresh(google.auth.transport.requests.Request())
+        return blob.generate_signed_url(
+            expiration=PLAYBACK_URL_TTL,
+            method="GET",
+            version="v4",
+            service_account_email=getattr(credentials, "service_account_email", None),
+            access_token=getattr(credentials, "token", None),
+        )
     except Exception as exc:
-        # A record without a playable link is still a record.
-        logger.error("Could not sign a playback URL (%s)", type(exc).__name__)
+        # A record without a playable link is still a record. Log the reason:
+        # a missing signing permission is otherwise invisible.
+        logger.error("Could not sign a playback URL (%s: %s)", type(exc).__name__, exc)
         return None
 
 
