@@ -404,9 +404,16 @@ async def review(body: ReviewRequest):
                 answer["annotated_video_uri"] = await overlay.render(
                     body.video_uri, answer["tracks"]
                 )
+                # And an excerpt of just the cited seconds: what a reviewer
+                # actually sends on, rather than a whole drive to scrub through.
+                span = overlay.cited_span(answer["tracks"])
+                answer["excerpt_video_uri"] = (
+                    await overlay.render(body.video_uri, answer["tracks"], span) if span else None
+                )
             except Exception as exc:
                 logger.error("Could not annotate the clip (%s)", type(exc).__name__)
                 answer["annotated_video_uri"] = None
+                answer["excerpt_video_uri"] = None
             # Stored after the verdict exists, so a storage fault cannot cost the
             # caller a review they have already waited minutes for.
             answer["review_id"] = await history.save(answer, body.region)

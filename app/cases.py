@@ -202,6 +202,9 @@ def decision_trail(review: dict, case_id: str) -> dict:
     return {
         "caseId": case_id,
         "verdict": review.get("verdict") or "",
+        # The Evidence schema is closed and has no field for an excerpt, so the
+        # cut-down clip is offered here rather than being dropped.
+        "excerptVideoUrl": review.get("excerpt_video_url"),
         # One entry per offence, in the same order, so the UI can line them up.
         "offences": [
             {

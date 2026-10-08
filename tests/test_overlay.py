@@ -57,3 +57,41 @@ def test_no_tracks_means_no_filters():
 def test_the_annotated_copy_never_overwrites_the_upload():
     name = annotated_name("uploads/abc-123")
     assert name.startswith("annotated/") and "uploads/" not in name
+
+
+def test_the_excerpt_covers_the_cited_seconds_with_room_either_side():
+    from app.overlay import CLIP_PADDING, cited_span
+
+    start, end = cited_span([track([box(10.0), box(14.0)])])
+    assert start == 10.0 - CLIP_PADDING
+    assert end > 14.0  # the last box is held, then padded
+
+
+def test_an_excerpt_never_starts_before_the_video_does():
+    from app.overlay import cited_span
+
+    # A box at 1s with 3s of padding would otherwise ask ffmpeg to seek to -2s.
+    assert cited_span([track([box(1.0)])])[0] == 0.0
+
+
+def test_there_is_no_excerpt_without_boxes():
+    from app.overlay import cited_span
+
+    assert cited_span([]) is None
+    assert cited_span([track([])]) is None
+
+
+def test_boxes_move_with_the_cut():
+    from app.overlay import shifted
+
+    # A box at 12s in the original is at 2s in a clip that starts at 10s.
+    [moved] = shifted([track([box(12.0), box(13.0)])], 10.0)
+    assert [f["atSeconds"] for f in moved["frames"]] == [2.0, 3.0]
+    # Everything else about the track is untouched.
+    assert moved["vehicleTrackId"] == "v1"
+
+
+def test_an_excerpt_and_a_full_render_do_not_share_a_name():
+    from app.overlay import annotated_name
+
+    assert annotated_name("uploads/a", "excerpt") != annotated_name("uploads/a", "annotated")

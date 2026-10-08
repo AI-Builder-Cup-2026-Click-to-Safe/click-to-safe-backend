@@ -53,6 +53,7 @@ def summarise(review_id: str, result: dict, created_at: datetime, case: dict | N
         "created_at": created_at,
         "video_uri": result.get("video_uri", ""),
         "annotated_video_uri": result.get("annotated_video_uri"),
+        "excerpt_video_uri": result.get("excerpt_video_uri"),
         "reportable_count": result.get("reportable_count", 0),
         "verdict": result.get("verdict", "")[:500],
         # The provisions cited, so a list can be scanned without opening records.
@@ -188,4 +189,6 @@ def with_playback(record: dict) -> dict:
         **record,
         "original_video_url": playable(record.get("video_uri")),
         "annotated_video_url": playable(record.get("annotated_video_uri")),
+        # Just the cited seconds, boxes included: the clip a reviewer sends on.
+        "excerpt_video_url": playable(record.get("excerpt_video_uri")),
     }

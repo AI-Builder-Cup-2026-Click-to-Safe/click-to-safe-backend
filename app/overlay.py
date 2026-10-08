@@ -28,6 +28,9 @@ BOX_THICKNESS = 4
 HOLD_SECONDS = 1.0
 # Shorter than a frame at 60fps, so no frame shows two boxes for one vehicle.
 BOUNDARY_GAP = 0.01
+# Seconds kept either side of the boxes in the excerpt, so the manoeuvre has a
+# visible run-up and does not end on the frame the last box sits in.
+CLIP_PADDING = 3.0
 
 
 def available() -> bool:
@@ -66,9 +69,22 @@ def drawbox_filters(tracks: list[dict], width: int, height: int) -> list[str]:
     return filters
 
 
-def annotated_name(object_name: str) -> str:
-    """Where the annotated copy lives: beside the uploads, never over them."""
-    return f"annotated/{object_name.removeprefix('uploads/')}"
+def annotated_name(object_name: str, kind: str = "annotated") -> str:
+    """Where a rendered copy lives: beside the uploads, never over them."""
+    return f"{kind}/{object_name.removeprefix('uploads/')}"
+
+
+def cited_span(tracks: list[dict]) -> tuple[float, float] | None:
+    """The stretch the boxes cover, with a little room either side.
+
+    A reviewer sending evidence on wants the offence, not the whole drive, and
+    the lead-in is what makes the manoeuvre legible: a car appearing already
+    halfway across a lane shows nothing.
+    """
+    times = [f["atSeconds"] for t in tracks for f in (t.get("frames") or [])]
+    if not times:
+        return None
+    return max(0.0, min(times) - CLIP_PADDING), max(times) + CLIP_PADDING + HOLD_SECONDS
 
 
 async def dimensions(path: str) -> tuple[int, int] | None:
@@ -96,9 +112,31 @@ async def dimensions(path: str) -> tuple[int, int] | None:
     return (width, height) if width > 0 and height > 0 else None
 
 
-async def render(video_uri: str, tracks: list[dict]) -> str | None:
+def shifted(tracks: list[dict], offset: float) -> list[dict]:
+    """The same boxes against a clip that starts `offset` seconds in.
+
+    Box times are measured from the start of the original; once the video is
+    trimmed, every one of them must move back by the same amount or the boxes
+    draw late — or never, past the end of a short excerpt.
+    """
+    return [
+        {
+            **track,
+            "frames": [
+                {**f, "atSeconds": round(f["atSeconds"] - offset, 2)}
+                for f in (track.get("frames") or [])
+            ],
+        }
+        for track in tracks
+    ]
+
+
+async def render(
+    video_uri: str, tracks: list[dict], span: tuple[float, float] | None = None
+) -> str | None:
     """Render an annotated copy beside the original. Returns its gs:// URI.
 
+    With `span`, only those seconds are kept, and the boxes move with the cut.
     Returns None when there is nothing to draw or the render fails: the file is
     a convenience, and a case keeps its verdict and its tracks without one.
     """
@@ -108,8 +146,14 @@ async def render(video_uri: str, tracks: list[dict]) -> str | None:
         logger.error("ffmpeg is not installed; skipping the annotated video")
         return None
 
+    kind = "annotated"
+    if span:
+        start, end = span
+        tracks = shifted(tracks, start)
+        kind = "excerpt"
+
     bucket_name, _, object_name = video_uri.removeprefix("gs://").partition("/")
-    target_name = annotated_name(object_name)
+    target_name = annotated_name(object_name, kind)
     bucket = storage.Client(project=os.environ["APP_PROJECT_ID"]).bucket(bucket_name)
 
     with tempfile.TemporaryDirectory() as work:
@@ -130,10 +174,13 @@ async def render(video_uri: str, tracks: list[dict]) -> str | None:
 
         # Arguments are passed as a list, never through a shell, so the filter
         # string cannot be read as anything but one argument.
+        # -ss before -i seeks fast; -t then bounds the excerpt's length.
+        trim = ["-ss", f"{span[0]:.2f}", "-t", f"{span[1] - span[0]:.2f}"] if span else []
         process = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-loglevel",
             "error",
+            *trim,
             "-i",
             source,
             "-vf",
@@ -173,5 +220,5 @@ async def render(video_uri: str, tracks: list[dict]) -> str | None:
             logger.error("Could not store the annotated clip (%s)", type(exc).__name__)
             return None
 
-    logger.info("Annotated clip written with %d boxes", len(filters))
+    logger.info("%s written with %d boxes", "Excerpt" if span else "Annotated clip", len(filters))
     return f"gs://{bucket_name}/{target_name}"
