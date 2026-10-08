@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app import auth, history, overlay
 from app.adk_runner import run_review
+from app.cases import DEFAULT_REGION, build_case, decision_trail
 from app.chunking import (
     MAX_CLIP_DURATION,
     MAX_WINDOW_SECONDS,
@@ -130,6 +131,9 @@ class ReviewRequest(BaseModel):
         ge=MIN_WINDOW_SECONDS / 60,
         le=MAX_WINDOW_SECONDS / 60,
     )
+    # Which jurisdiction's dashboard this case belongs to, as the front end's
+    # contract defines it. It decides the incident's time zone.
+    region: Literal["MY", "SG", "JP"] = DEFAULT_REGION
 
 
 class Invocation(BaseModel):
@@ -405,7 +409,18 @@ async def review(body: ReviewRequest):
                 answer["annotated_video_uri"] = None
             # Stored after the verdict exists, so a storage fault cannot cost the
             # caller a review they have already waited minutes for.
-            answer["review_id"] = await history.save(answer)
+            answer["review_id"] = await history.save(answer, body.region)
+            # The dashboard reads a Case; the rest of this answer is the working
+            # it was built from, kept so nothing is lost by the conversion. A
+            # conversion fault must not discard a verdict that already exists.
+            try:
+                case = build_case(answer, history.case_id(answer["review_id"]), body.region)
+                answer["case"] = case
+                answer["decision_trail"] = decision_trail(answer, case["id"])
+            except Exception as exc:
+                logger.error("Could not shape the case (%s)", type(exc).__name__)
+                answer["case"] = None
+                answer["decision_trail"] = None
             return answer
     except TimeoutError as exc:
         raise HTTPException(504, "Agent review timed out") from exc

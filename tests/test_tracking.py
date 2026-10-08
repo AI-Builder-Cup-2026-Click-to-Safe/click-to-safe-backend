@@ -138,7 +138,8 @@ def test_a_tracking_fault_does_not_fail_a_verdict(monkeypatch):
     monkeypatch.setattr(
         main, "run_review", AsyncMock(return_value={"reportable_count": 1, "reportable": []})
     )
-    monkeypatch.setattr(main, "history", Mock(save=AsyncMock(return_value="rid")))
+    # Only save is stubbed; case_id stays real, so the case is built for real.
+    monkeypatch.setattr(main.history, "save", AsyncMock(return_value="rid"))
 
     def broken():
         raise KeyError("APP_PROJECT_ID")

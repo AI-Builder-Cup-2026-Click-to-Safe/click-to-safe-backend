@@ -18,6 +18,8 @@ from functools import lru_cache
 
 from google.cloud.firestore import AsyncClient, Query
 
+from app.cases import DEFAULT_REGION, build_case, decision_trail
+
 logger = logging.getLogger(__name__)
 
 SUMMARIES = "review_summaries"
@@ -31,10 +33,22 @@ def client() -> AsyncClient:
     return AsyncClient(project=os.environ["APP_PROJECT_ID"])
 
 
-def summarise(review_id: str, result: dict, created_at: datetime) -> dict:
+def case_id(review_id: str) -> str:
+    """The case reference a person sees. Short, and stable for one review."""
+    return f"RR-{review_id[:8].upper()}"
+
+
+def summarise(review_id: str, result: dict, created_at: datetime, case: dict | None = None) -> dict:
     """The fields a list view shows, and nothing else."""
     reportable = result.get("reportable", []) or []
+    case = case or {}
     return {
+        "case_id": case.get("id") or case_id(review_id),
+        # The dashboard charts offences by code, so a list can drive the chart
+        # without opening a record.
+        "offence_codes": sorted({o.get("code", "") for o in case.get("offences") or []} - {""}),
+        "plate": ((case.get("vehicle") or {}).get("plate")),
+        "reporting_status": ((case.get("reporting") or {}).get("status")),
         "review_id": review_id,
         "created_at": created_at,
         "video_uri": result.get("video_uri", ""),
@@ -50,7 +64,7 @@ def summarise(review_id: str, result: dict, created_at: datetime) -> dict:
     }
 
 
-async def save(result: dict) -> str:
+async def save(result: dict, region: str = DEFAULT_REGION) -> str:
     """Persist one finished review. Returns its id.
 
     A failure here must not cost the caller their review, which has already been
@@ -58,14 +72,30 @@ async def save(result: dict) -> str:
     """
     review_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc)
+    # Built once, here, so every reader sees the same case rather than a shape
+    # that drifts as the converter changes. Inside the try: storing a review is
+    # already best-effort, and a conversion fault must not be the exception.
     try:
+        case = build_case(result, case_id(review_id), region, created_at)
+        trail = decision_trail(result, case["id"])
         db = client()
-        summary = summarise(review_id, result, created_at)
+        summary = summarise(review_id, result, created_at, case)
         await db.collection(SUMMARIES).document(review_id).set(summary)
         await (
             db.collection(RECORDS)
             .document(review_id)
-            .set({"review_id": review_id, "created_at": created_at, **result})
+            .set(
+                {
+                    "review_id": review_id,
+                    "created_at": created_at,
+                    "case": case,
+                    # Why the model decided this, for the disclosure the design
+                    # calls "Why this may be an offence". It sits beside the
+                    # case because the contract's objects reject unknown keys.
+                    "decision_trail": trail,
+                    **result,
+                }
+            )
         )
     except Exception as exc:
         logger.error("Could not store the review (%s)", type(exc).__name__)
