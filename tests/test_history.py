@@ -224,3 +224,73 @@ def test_a_record_without_a_case_still_reads_back(monkeypatch):
     monkeypatch.setattr(history, "playable", lambda uri: None)
     out = history.with_playback({"video_uri": "gs://b/uploads/a"})
     assert out["case"] is None and out["decision_trail"] is None
+
+
+def summary(plate=None, status="ready", codes=(), days_ago=0):
+    from datetime import timedelta as td
+
+    return {
+        "plate": plate,
+        "reporting_status": status,
+        "offence_codes": list(codes),
+        "created_at": datetime.now(timezone.utc) - td(days=days_ago),
+    }
+
+
+def test_only_cases_a_person_sent_are_counted_as_reports():
+    # A case the model produced but nobody sent is not a report.
+    out = history.tally(
+        [summary("AAA 1", "sent"), summary("BBB 2", "ready"), summary("CCC 3", "opened")],
+        "2026-10-08",
+    )
+    assert out["snitchedCount"] == 1
+
+
+def test_one_plate_reported_twice_is_one_report():
+    out = history.tally([summary("AAA 1", "sent"), summary("AAA 1", "sent")], "2026-10-08")
+    assert out["snitchedCount"] == 1
+
+
+def test_sightings_count_every_case_not_distinct_plates():
+    # The same plate in three cases is one snitch but three sightings.
+    out = history.tally([summary("AAA 1") for _ in range(3)], "2026-10-08")
+    assert out["mostSpotted"] == {"plate": "AAA 1", "count": 3}
+
+
+def test_offences_are_counted_per_occurrence():
+    out = history.tally(
+        [summary("A 1", codes=["queue_cut"]), summary("B 2", codes=["queue_cut", "red_light"])],
+        "2026-10-08",
+    )
+    assert out["offenceOccurrences"] == {"queue_cut": 2, "red_light": 1}
+
+
+def test_a_case_without_a_plate_is_not_a_sighting():
+    out = history.tally([summary(None, "sent", ["road_rage"])], "2026-10-08")
+    assert out["mostSpotted"] is None and out["snitchedCount"] == 0
+    # The offence still happened, so it is still counted.
+    assert out["offenceOccurrences"] == {"road_rage": 1}
+
+
+def test_an_empty_history_counts_zero():
+    out = history.tally([], "2026-10-08")
+    assert out["snitchedCount"] == 0 and out["mostSpotted"] is None
+    assert out["offenceOccurrences"] == {}
+
+
+def test_fines_are_never_claimed_without_an_authority():
+    # Nothing is wired to an enforcement feed, so any number would be invented.
+    assert history.tally([summary("A 1", "sent")], "2026-10-08")["billedCount"] == 0
+
+
+def test_the_counters_are_never_marked_as_demo():
+    assert history.tally([], "2026-10-08")["isDemo"] is False
+
+
+@pytest.mark.parametrize("period,scoped", [("today", True), ("week", True), ("all", False)])
+def test_a_period_scopes_the_window(period, scoped):
+    assert (history.period_start(period) is not None) is scoped
+
+
+def test_an_unknown_period_is_rejected(client, db):
+    assert client.get("/v1/impact?period=fortnight").status_code == 422

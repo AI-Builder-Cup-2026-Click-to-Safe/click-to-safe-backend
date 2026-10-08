@@ -437,6 +437,41 @@ Stored reviews keep whatever the analyst read, licence plates included. The
 history sits behind the same shared token as everything else, but anything
 exported from it carries those plates onward.
 
+#### Impact counters
+
+```bash
+curl "$PUBLIC_API_URL/v1/impact?period=week" -H "Authorization: Bearer $PUBLIC_API_TOKEN"
+```
+
+```json
+{
+  "snitchedCount": 1,
+  "billedCount": 0,
+  "mostSpotted": { "plate": "WA 4978 R", "count": 2 },
+  "offenceOccurrences": { "queue_cut": 2, "red_light": 1 },
+  "isDemo": false,
+  "demoToday": "2026-10-08"
+}
+```
+
+`period` is `all`, `week` or `today`. Each counter means something different:
+
+| Counter | Counts |
+| --- | --- |
+| `snitchedCount` | Distinct plates in cases a person confirmed and sent. |
+| `billedCount` | Fines an authority issued. Always `0`: nothing is wired to one. |
+| `mostSpotted` | The plate seen in the most cases, however many were sent. |
+| `offenceOccurrences` | Every occurrence, so an offence twice in one case counts twice. |
+
+A case the model produced is not a report. Only a person moves one to `sent`:
+
+```bash
+curl -X PATCH "$PUBLIC_API_URL/v1/reviews/$REVIEW_ID/reporting" \
+  -H "Authorization: Bearer $PUBLIC_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"reporting_status":"sent"}'
+```
+
 ### Errors
 
 | Code | Meaning |

@@ -493,6 +493,46 @@ async def read_review(review_id: str):
     return history.with_playback(record)
 
 
+@app.get("/v1/impact")
+async def impact(period: str = "all"):
+    """Counters for the impact screen, over a period.
+
+    Each counter means something different: a plate reported three times is one
+    snitch but three sightings, and an offence repeated in a case counts each
+    time it occurred.
+    """
+    if period not in history.IMPACT_PERIODS:
+        raise HTTPException(422, f"period must be one of {', '.join(history.IMPACT_PERIODS)}")
+    try:
+        return await history.impact(period)
+    except Exception as exc:
+        logger.error("Could not aggregate impact (%s)", type(exc).__name__)
+        raise HTTPException(503, "Review history is unavailable") from exc
+
+
+class ReportingPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Only a person moves a case to sent, which is what the impact screen counts.
+    reporting_status: Literal["opened", "sent"]
+
+
+@app.patch("/v1/reviews/{review_id}/reporting")
+async def set_reporting(review_id: str, body: ReportingPatch):
+    """Record that a person opened or sent this case.
+
+    Nothing else may set it: the design counts a report only when someone
+    confirmed and sent it, so the model must not mark its own work as reported.
+    """
+    try:
+        updated = await history.set_reporting_status(review_id, body.reporting_status)
+    except Exception as exc:
+        logger.error("Could not update reporting status (%s)", type(exc).__name__)
+        raise HTTPException(503, "Review history is unavailable") from exc
+    if not updated:
+        raise HTTPException(404, "No such review")
+    return {"review_id": review_id, "reporting_status": body.reporting_status}
+
+
 @app.delete("/v1/reviews/{review_id}")
 async def remove_review(review_id: str):
     """Delete a stored review. Returns 404 when it was already gone."""

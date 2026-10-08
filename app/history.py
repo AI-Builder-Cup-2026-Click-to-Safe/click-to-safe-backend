@@ -217,3 +217,90 @@ def with_playback(record: dict) -> dict:
         # Just the cited seconds, boxes included: the clip a reviewer sends on.
         "excerpt_video_url": excerpt,
     }
+
+
+IMPACT_PERIODS = ("all", "week", "today")
+
+
+def period_start(period: str, now: datetime | None = None) -> datetime | None:
+    """When a period begins, or None for all time."""
+    at = now or datetime.now(timezone.utc)
+    if period == "today":
+        return at.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "week":
+        return at - timedelta(days=7)
+    return None
+
+
+def tally(summaries: list[dict], today: str) -> dict:
+    """The dashboard's counters, from the summaries alone.
+
+    The design is specific about what each one counts, and the differences
+    matter: a plate seen in three cases is one snitch but three sightings, and
+    an offence repeated within a case counts each time.
+    """
+    # Distinct plates in cases a person actually confirmed and sent. A case the
+    # model produced but nobody sent is not a report, so it is not counted.
+    sent_plates = {
+        s["plate"] for s in summaries if s.get("plate") and s.get("reporting_status") == "sent"
+    }
+
+    sightings: dict[str, int] = {}
+    occurrences: dict[str, int] = {}
+    for summary in summaries:
+        plate = summary.get("plate")
+        if plate:
+            sightings[plate] = sightings.get(plate, 0) + 1
+        for code in summary.get("offence_codes") or []:
+            occurrences[code] = occurrences.get(code, 0) + 1
+
+    most = max(sightings.items(), key=lambda kv: kv[1], default=None)
+    return {
+        "snitchedCount": len(sent_plates),
+        # An issued fine is confirmed by an authority, and nothing here is wired
+        # to one, so claiming any number would be inventing enforcement.
+        "billedCount": 0,
+        "mostSpotted": {"plate": most[0], "count": most[1]} if most else None,
+        "offenceOccurrences": occurrences,
+        "isDemo": False,
+        "demoToday": today,
+    }
+
+
+async def impact(period: str = "all", now: datetime | None = None) -> dict:
+    """Aggregates for the impact screen, over the period asked for."""
+    at = now or datetime.now(timezone.utc)
+    since = period_start(period, at)
+    query = client().collection(SUMMARIES)
+    if since is not None:
+        query = query.where("created_at", ">=", since)
+    rows = [doc.to_dict() async for doc in query.stream()]
+    return tally(rows, at.date().isoformat())
+
+
+async def set_reporting_status(review_id: str, status: str) -> bool:
+    """Mark a case opened or sent. True when the review existed.
+
+    The summary and the stored case both carry the status, and the impact
+    screen counts from the summary, so both are moved together or the counters
+    would disagree with the case a reader opens.
+    """
+    db = client()
+    record = await db.collection(RECORDS).document(review_id).get()
+    if not record.exists:
+        return False
+    stored = record.to_dict() or {}
+    case = stored.get("case")
+    if isinstance(case, dict):
+        case = {
+            **case,
+            "reporting": {
+                **(case.get("reporting") or {}),
+                "status": status,
+                # Only a person reaches this endpoint, so sending is confirmed.
+                "confirmedByUser": status == "sent",
+            },
+        }
+        await db.collection(RECORDS).document(review_id).set({**stored, "case": case})
+    await db.collection(SUMMARIES).document(review_id).set({"reporting_status": status}, merge=True)
+    return True
