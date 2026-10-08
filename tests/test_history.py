@@ -200,3 +200,27 @@ def test_a_cursor_whose_plus_became_a_space_still_works(client, db):
     """A query string decodes "+" as a space, so an offset arrives broken."""
     assert client.get("/v1/reviews?before=2026-10-04T12:09:54.711370 00:00").status_code == 200
     assert client.get("/v1/reviews?before=2026-10-04T12:09:54.711370%2B00:00").status_code == 200
+
+
+def test_playback_urls_reach_the_case_the_dashboard_reads(monkeypatch):
+    """The case is built at save time; a signed URL only exists at read time."""
+    monkeypatch.setattr(history, "playable", lambda uri: f"https://signed/{uri}" if uri else None)
+    record = {
+        "video_uri": "gs://b/uploads/a",
+        "annotated_video_uri": "gs://b/annotated/a",
+        "excerpt_video_uri": "gs://b/excerpt/a",
+        "case": {"id": "RR-1", "evidence": {"annotatedVideoUrl": None, "tracks": []}},
+        "decision_trail": {"caseId": "RR-1", "excerptVideoUrl": None},
+    }
+    out = history.with_playback(record)
+    assert out["case"]["evidence"]["annotatedVideoUrl"] == "https://signed/gs://b/annotated/a"
+    assert out["case"]["evidence"]["originalVideoUrl"] == "https://signed/gs://b/uploads/a"
+    assert out["decision_trail"]["excerptVideoUrl"] == "https://signed/gs://b/excerpt/a"
+    # What the case already carried is left alone.
+    assert out["case"]["evidence"]["tracks"] == []
+
+
+def test_a_record_without_a_case_still_reads_back(monkeypatch):
+    monkeypatch.setattr(history, "playable", lambda uri: None)
+    out = history.with_playback({"video_uri": "gs://b/uploads/a"})
+    assert out["case"] is None and out["decision_trail"] is None

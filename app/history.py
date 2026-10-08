@@ -184,11 +184,36 @@ def playable(uri: str | None) -> str | None:
 
 
 def with_playback(record: dict) -> dict:
-    """Add the URLs a player needs, leaving the stored gs:// URIs in place."""
+    """Add the URLs a player needs, leaving the stored gs:// URIs in place.
+
+    The case and its trail are built when a review is stored, but a signed URL
+    expires, so it cannot be stored with them. They are filled in here, on the
+    way out, or the dashboard would read the empty fields it was given.
+    """
+    original = playable(record.get("video_uri"))
+    annotated = playable(record.get("annotated_video_uri"))
+    excerpt = playable(record.get("excerpt_video_uri"))
+
+    case = record.get("case")
+    if isinstance(case, dict):
+        case = {
+            **case,
+            "evidence": {
+                **(case.get("evidence") or {}),
+                "originalVideoUrl": original,
+                "annotatedVideoUrl": annotated,
+            },
+        }
+    trail = record.get("decision_trail")
+    if isinstance(trail, dict):
+        trail = {**trail, "excerptVideoUrl": excerpt}
+
     return {
         **record,
-        "original_video_url": playable(record.get("video_uri")),
-        "annotated_video_url": playable(record.get("annotated_video_uri")),
+        "case": case,
+        "decision_trail": trail,
+        "original_video_url": original,
+        "annotated_video_url": annotated,
         # Just the cited seconds, boxes included: the clip a reviewer sends on.
-        "excerpt_video_url": playable(record.get("excerpt_video_uri")),
+        "excerpt_video_url": excerpt,
     }

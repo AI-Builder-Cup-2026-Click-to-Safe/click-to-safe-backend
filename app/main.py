@@ -424,6 +424,9 @@ async def review(body: ReviewRequest):
                 case = build_case(answer, history.case_id(answer["review_id"]), body.region)
                 answer["case"] = case
                 answer["decision_trail"] = decision_trail(answer, case["id"])
+                # The videos exist but nothing has signed them yet; sign them
+                # here too, so this answer plays without a second request.
+                answer = history.with_playback(answer)
             except Exception as exc:
                 logger.error("Could not shape the case (%s)", type(exc).__name__)
                 answer["case"] = None
