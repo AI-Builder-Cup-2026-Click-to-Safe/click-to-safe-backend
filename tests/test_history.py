@@ -115,6 +115,14 @@ def test_a_summary_carries_only_what_a_list_shows():
     assert "evidence" not in summary
 
 
+def test_a_summary_includes_the_server_cost_when_available():
+    at = datetime.now(timezone.utc)
+    priced = history.summarise("abc", {**RESULT, "estimated_ai_cost_usd": 0.04460925}, at)
+    old = history.summarise("old", RESULT, at)
+    assert priced["estimated_ai_cost_usd"] == 0.04460925
+    assert old["estimated_ai_cost_usd"] is None
+
+
 def test_a_long_verdict_is_truncated_in_the_summary():
     summary = history.summarise("abc", {"verdict": "x" * 900}, datetime.now(timezone.utc))
     assert len(summary["verdict"]) == 500
@@ -294,3 +302,9 @@ def test_a_period_scopes_the_window(period, scoped):
 
 def test_an_unknown_period_is_rejected(client, db):
     assert client.get("/v1/impact?period=fortnight").status_code == 422
+
+
+@pytest.mark.anyio
+async def test_cost_survives_history_storage_and_detail_read(db):
+    review_id = await history.save({**RESULT, "estimated_ai_cost_usd": 0.002049})
+    assert (await history.get(review_id))["estimated_ai_cost_usd"] == 0.002049

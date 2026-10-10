@@ -19,7 +19,9 @@ from google import genai
 from google.genai import types
 from pydantic import ValidationError
 
+from app import costs
 from app.agents import VideoReport, agent_config
+from app.benchmark import record_usage
 from app.chunking import WINDOW_SECONDS, merge, windows
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,8 @@ async def analyse_window(
             type(exc).__name__,
         )
         return None
+    record_usage("video_window", _vision_model(), getattr(result, "usage_metadata", None))
+    costs.record_usage(_vision_model(), getattr(result, "usage_metadata", None))
     logger.info("Window %.0f-%.0fs read in %.0fs", start, end, time.monotonic() - began)
     if not result.text:
         logger.error("Window %.0f-%.0fs returned no analysis", start, end)

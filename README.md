@@ -159,6 +159,19 @@ export PUBLIC_API_TOKEN=...
 ./scripts/public-review.sh dashcam.mp4
 ```
 
+#### Estimated AI cost
+
+Completed `/v1/review` responses and `/v1/reviews` list and detail records include
+`estimated_ai_cost_usd` (number or `null`). It sums Gemini token usage across all
+video windows, agent/tool turns and vehicle tracking calls. It is a USD estimate
+for the configured Gemini 3.8 Flash model, including cached-input pricing and
+reasoning tokens. Standard Vertex global/non-global rates and the introductory
+rate through December 2026 are applied; compute, storage, retrieval and
+account-specific discounts are excluded. See `app/costs.py` for the rate source.
+Unknown models or incomplete usage return `null`, never a misleading partial
+amount. Older records are not backfilled. No extra model calls are made to
+calculate cost.
+
 #### 1. Request an upload slot
 
 `size_bytes` must be the real byte count, and at most 500 MiB. The clip itself must

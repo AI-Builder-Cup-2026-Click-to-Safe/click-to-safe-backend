@@ -20,6 +20,9 @@ import os
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app import costs
+from app.benchmark import record_usage
+
 logger = logging.getLogger(__name__)
 
 
@@ -149,6 +152,8 @@ async def track_segment(
         # One segment failing costs its seconds, not the whole track.
         logger.error("Could not track %s (%s)", vehicle.get("vehicle_id", "?"), type(exc).__name__)
         return []
+    record_usage("vehicle_tracking", _tracking_model(), getattr(result, "usage_metadata", None))
+    costs.record_usage(_tracking_model(), getattr(result, "usage_metadata", None))
     if not result.text:
         logger.error("Tracking returned no text for %s", vehicle.get("vehicle_id", "?"))
         return []

@@ -86,3 +86,37 @@ def test_runtime_contract_rejects_an_empty_review_input(client):
         "/api/reasoning_engine", json={"class_method": "review_traffic", "input": {}}
     )
     assert response.status_code == 422
+
+
+def test_cost_is_returned_and_saved_after_tracking(client, cloud, monkeypatch):
+    from google.genai import types
+
+    from app import costs
+
+    _, runner = cloud
+    metadata = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=1000, candidates_token_count=100
+    )
+
+    async def review(*args, **kwargs):
+        costs.record_usage("gemini-3.8-flash", metadata)
+        return dict(VERDICT)
+
+    async def track(*args, **kwargs):
+        costs.record_usage("gemini-3.8-flash", metadata)
+        return []
+
+    runner.side_effect = review
+    monkeypatch.setenv("MODEL_REGION", "global")
+    monkeypatch.setattr(main, "clip_duration", AsyncMock(return_value=5))
+    monkeypatch.setattr(main, "model_client", lambda: None)
+    monkeypatch.setattr(main, "track_reported", track)
+    monkeypatch.setattr(main.overlay, "render", AsyncMock(return_value=None))
+    saved = AsyncMock(return_value="a" * 32)
+    monkeypatch.setattr(main.history, "save", saved)
+    response = client.post("/v1/review", json={"video_uri": "gs://test-videos/uploads/a"})
+    assert response.status_code == 200
+    value = response.json()["estimated_ai_cost_usd"]
+    assert value is not None and value > 0
+    assert saved.await_args.args[0]["estimated_ai_cost_usd"] == value
+    assert costs.estimate() is None

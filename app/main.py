@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime
 from functools import lru_cache
@@ -17,15 +18,17 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from google import genai
 from google.api_core.exceptions import NotFound
 from google.cloud import storage
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app import auth, history, overlay
+from app import auth, costs, history, overlay
 from app.adk_runner import run_review
+from app.benchmark import begin_request, emit, end_request
+from app.benchmark import stage as benchmark_stage
 from app.cases import DEFAULT_REGION, build_case, decision_trail
 from app.chunking import (
     MAX_CLIP_DURATION,
@@ -43,6 +46,35 @@ from app.violations import build_report, review_config
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Prototype Video Agent", version="0.1.0")
 auth.install(app)
+
+
+@app.middleware("http")
+async def benchmark_request(request: Request, call_next):
+    """Opt-in request correlation, enabled only on a tagged measurement revision."""
+    run_id = request.headers.get("x-benchmark-id")
+    enabled = os.getenv("BENCHMARK_LOGGING", "").lower() == "true"
+    if not enabled or not run_id:
+        return await call_next(request)
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", run_id):
+        return PlainTextResponse("Invalid benchmark ID", status_code=400)
+
+    token = begin_request(run_id)
+    started = time.monotonic()
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        emit(
+            "request",
+            route=request.url.path,
+            method=request.method,
+            status_code=response.status_code if response is not None else 500,
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        end_request(token)
+
+
 VideoType = Literal["video/mp4", "video/webm", "video/quicktime", "video/mpeg"]
 # Generous next to what the length limit implies — ten minutes at 480p60 encodes
 # to about 90 MiB — so a high-bitrate or higher-resolution recording of a
@@ -361,12 +393,14 @@ async def prepared_analysis(
 async def review(body: ReviewRequest):
     """Run the analyst, lawyer and judge agents over an uploaded clip."""
     # Reject foreign URLs before obtaining credentials or calling any service.
+    stage_started = time.monotonic()
     checked_object(body.video_uri)
     await asyncio.to_thread(check_uploaded_video, body)
     # Measured first: a long clip is read window by window, which needs its own
     # time on top of the agent loop's, and anything past the limit is refused
     # rather than started and abandoned at the deadline.
     duration = await clip_duration(body)
+    benchmark_stage("metadata_check", stage_started)
     if duration is not None and duration > MAX_CLIP_DURATION:
         raise HTTPException(413, f"Video must be {MAX_CLIP_DURATION / 60:.0f} minutes or shorter")
     window = body.window_minutes * 60
@@ -377,13 +411,18 @@ async def review(body: ReviewRequest):
             f"{body.window_minutes:g} minute windows within one request. "
             f"Use a larger window_minutes.",
         )
+    cost_token = costs.begin_review()
     try:
         # Three agents over up to three rounds; the cap keeps a stuck review bounded.
         async with asyncio.timeout(review_timeout(duration, window)):
+            stage_started = time.monotonic()
             prepared, coverage = await prepared_analysis(body, duration, window)
+            benchmark_stage("video_window_analysis", stage_started)
             reasoning_started = time.monotonic()
             result = await run_review(body.video_uri, body.mime_type, body.focus, prepared=prepared)
             logger.info("Lawyer and judge finished in %.0fs", time.monotonic() - reasoning_started)
+            benchmark_stage("lawyer_and_judge", reasoning_started)
+            postprocess_started = time.monotonic()
             # Say how the clip was read, so a partial window count is visible.
             answer = {**result, "coverage": coverage} if coverage else result
             # Box each reported vehicle so a player can point at it. Only the
@@ -416,6 +455,7 @@ async def review(body: ReviewRequest):
                 answer["excerpt_video_uri"] = None
             # Stored after the verdict exists, so a storage fault cannot cost the
             # caller a review they have already waited minutes for.
+            answer["estimated_ai_cost_usd"] = costs.estimate()
             answer["review_id"] = await history.save(answer, body.region)
             # The dashboard reads a Case; the rest of this answer is the working
             # it was built from, kept so nothing is lost by the conversion. A
@@ -431,6 +471,7 @@ async def review(body: ReviewRequest):
                 logger.error("Could not shape the case (%s)", type(exc).__name__)
                 answer["case"] = None
                 answer["decision_trail"] = None
+            benchmark_stage("tracking_render_storage", postprocess_started)
             return answer
     except TimeoutError as exc:
         raise HTTPException(504, "Agent review timed out") from exc
@@ -446,6 +487,8 @@ async def review(body: ReviewRequest):
             getattr(exc, "code", getattr(exc, "status_code", "?")),
         )
         raise HTTPException(502, "Agent review failed") from exc
+    finally:
+        costs.end_review(cost_token)
 
 
 @app.get("/v1/reviews")

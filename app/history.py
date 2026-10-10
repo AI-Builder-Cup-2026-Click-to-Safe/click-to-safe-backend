@@ -62,6 +62,7 @@ def summarise(review_id: str, result: dict, created_at: datetime, case: dict | N
         ),
         "duration_seconds": (result.get("coverage") or {}).get("duration_seconds"),
         "rounds_used": result.get("rounds_used", 0),
+        "estimated_ai_cost_usd": result.get("estimated_ai_cost_usd"),
     }
 
 

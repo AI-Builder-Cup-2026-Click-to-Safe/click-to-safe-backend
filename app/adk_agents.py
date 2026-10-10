@@ -23,6 +23,7 @@ from google.adk.dependencies.vertexai import rag
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
 
+from app import costs
 from app.agents import (
     JUDGE_INSTRUCTION,
     JUDGE_SCHEMA,
@@ -32,6 +33,7 @@ from app.agents import (
     VIDEO_INSTRUCTION,
     VIDEO_SCHEMA,
 )
+from app.benchmark import record_adk_usage
 
 STATE_VIDEO = "video_report"
 STATE_LEGAL = "legal_report"
@@ -135,6 +137,7 @@ def build_video_agent() -> LlmAgent:
         ),
         output_schema=VIDEO_SCHEMA,
         output_key=STATE_VIDEO,
+        after_model_callback=[record_adk_usage, costs.adk_callback(_vision_model())],
     )
 
 
@@ -159,6 +162,7 @@ def build_lawyer_agent() -> LlmAgent:
         ),
         # A retrieval tool must be the only tool on its agent.
         tools=[tool] if tool else [],
+        after_model_callback=[record_adk_usage, costs.adk_callback(_model())],
     )
 
 
@@ -184,6 +188,7 @@ def build_lawyer_step() -> LlmAgent:
         tools=[AgentTool(agent=build_lawyer_agent())],
         output_schema=LAWYER_SCHEMA,
         output_key=STATE_LEGAL,
+        after_model_callback=[record_adk_usage, costs.adk_callback(_model())],
     )
 
 
@@ -202,6 +207,7 @@ def build_judge_agent() -> LlmAgent:
         output_schema=JUDGE_SCHEMA,
         output_key=STATE_VERDICT,
         after_agent_callback=stop_when_decided,
+        after_model_callback=[record_adk_usage, costs.adk_callback(_model())],
     )
 
 
