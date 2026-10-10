@@ -10,6 +10,7 @@ import json
 import logging
 from typing import Any
 
+from google.adk.agents.run_config import RunConfig
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
@@ -28,6 +29,9 @@ REVIEW_REQUEST = (
     "Review this dashcam footage for traffic violations by other vehicles that "
     "would warrant a report."
 )
+
+
+MAX_LLM_CALLS = 80
 
 
 def _loads(value: Any) -> Any:
@@ -81,7 +85,12 @@ async def run_review(
 
     rounds = 0
     async for event in runner.run_async(
-        user_id="runtime", session_id=session.id, new_message=message
+        user_id="runtime",
+        session_id=session.id,
+        new_message=message,
+        # A full review takes about twenty calls; a runaway tool loop fails fast
+        # instead of holding the request until the deadline.
+        run_config=RunConfig(max_llm_calls=MAX_LLM_CALLS),
     ):
         if event.author == "judge" and event.content and event.content.parts:
             rounds += 1

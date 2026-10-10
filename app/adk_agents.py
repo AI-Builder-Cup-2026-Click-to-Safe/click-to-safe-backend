@@ -166,6 +166,30 @@ def build_lawyer_agent() -> LlmAgent:
     )
 
 
+LAWYER_CALLS = "lawyer_step_calls"
+
+
+def reset_lawyer_calls(callback_context) -> None:
+    """Each round may consult the lawyer afresh."""
+    callback_context.state[LAWYER_CALLS] = 0
+
+
+def call_lawyer_once(tool, args, tool_context) -> dict | None:
+    """Refuse repeat calls within a round.
+
+    The model sometimes ignores "exactly once" and re-asks the lawyer until the
+    review deadline; answering the repeat locally ends that loop.
+    """
+    calls = tool_context.state.get(LAWYER_CALLS, 0) + 1
+    tool_context.state[LAWYER_CALLS] = calls
+    if calls > 1:
+        return {
+            "error": "traffic_lawyer has already answered this round. Record its "
+            "earlier answer now; if it cited nothing, return empty findings."
+        }
+    return None
+
+
 def build_lawyer_step() -> LlmAgent:
     """Loop step that delegates to the lawyer through an AgentTool.
 
@@ -186,6 +210,8 @@ def build_lawyer_step() -> LlmAgent:
             "the lawyer did not cite. If it cited nothing, return empty findings."
         ),
         tools=[AgentTool(agent=build_lawyer_agent())],
+        before_agent_callback=reset_lawyer_calls,
+        before_tool_callback=call_lawyer_once,
         output_schema=LAWYER_SCHEMA,
         output_key=STATE_LEGAL,
         after_model_callback=[record_adk_usage, costs.adk_callback(_model())],

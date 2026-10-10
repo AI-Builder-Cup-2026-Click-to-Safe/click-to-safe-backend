@@ -144,3 +144,14 @@ def test_the_analyst_reads_footage_on_its_own_stronger_model(corpus, monkeypatch
 def test_the_vision_model_can_be_overridden(corpus, monkeypatch):
     monkeypatch.setenv("VISION_MODEL", "gemini-2.5-pro")
     assert adk_agents.build_review_agent().sub_agents[0].model == "gemini-2.5-pro"
+
+
+def test_the_lawyer_is_consulted_once_per_round(corpus):
+    step = adk_agents.build_review_agent().sub_agents[1]
+    ctx = FakeContext({})
+    step.before_agent_callback(ctx)
+    assert step.before_tool_callback(None, {}, ctx) is None
+    assert "already answered" in step.before_tool_callback(None, {}, ctx)["error"]
+    # The next follow-up round may ask again.
+    step.before_agent_callback(ctx)
+    assert step.before_tool_callback(None, {}, ctx) is None
