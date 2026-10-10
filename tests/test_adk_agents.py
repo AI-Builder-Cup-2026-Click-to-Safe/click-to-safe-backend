@@ -161,8 +161,11 @@ def test_the_lawyer_is_consulted_once_per_round(corpus):
 
 def test_the_lawyer_tool_is_withdrawn_once_it_has_answered(corpus):
     from types import SimpleNamespace
+
     step = adk_agents.build_review_agent().sub_agents[1]
-    request = SimpleNamespace(config=SimpleNamespace(tools=["lawyer"]), tools_dict={"traffic_lawyer": 1})
+    request = SimpleNamespace(
+        config=SimpleNamespace(tools=["lawyer"]), tools_dict={"traffic_lawyer": 1}
+    )
     step.before_model_callback(FakeContext({adk_agents.LAWYER_CALLS: 0}), request)
     assert request.tools_dict
     step.before_model_callback(FakeContext({adk_agents.LAWYER_CALLS: 1}), request)
