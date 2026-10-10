@@ -14,14 +14,14 @@ Google Gen AI SDK. ADK sessions, memory, and Playground chat are not included.
 ## First deployment
 
 1. Create **`GCP_SA_KEY`** in
-   [GitHub Actions Secrets](https://github.com/Lorem-Ipsum-AI-Builder-Cup-2026/prototype/settings/secrets/actions)
+   [GitHub Actions Secrets](https://github.com/Lorem-Ipsum-AI-Builder-Cup-2026/click-to-safe-backend/settings/secrets/actions)
    and paste the **entire contents** of the service-account JSON file.
    Never commit the JSON file to the repository.
    Add **`PUBLIC_API_TOKEN`** in the same place: it is the shared token that
    guards the public Cloud Run endpoint, and deployment fails without it.
 2. Billing must be enabled on the GCP project, and the service account needs the roles below.
 3. Run **Run workflow → main** from
-   [Actions → Deploy Agent Runtime](https://github.com/Lorem-Ipsum-AI-Builder-Cup-2026/prototype/actions/workflows/deploy.yml).
+   [Actions → Deploy Agent Runtime](https://github.com/Lorem-Ipsum-AI-Builder-Cup-2026/click-to-safe-backend/actions/workflows/deploy.yml).
    After that, every push to `main` deploys automatically.
 4. Read `query_url`, `custom_api_base_url`, and the agent resource name from the
    successful run's Summary.
