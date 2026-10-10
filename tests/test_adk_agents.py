@@ -51,6 +51,8 @@ def test_judge_stops_the_loop_once_it_has_decided():
     ctx = FakeContext({adk_agents.STATE_VERDICT: json.dumps({"needs_more": False})})
     adk_agents.stop_when_decided(ctx)
     assert ctx.actions.escalate is True
+    # Without a state change ADK drops the event carrying escalate.
+    assert ctx.state[adk_agents.STATE_STOPPED] is True
 
 
 def test_judge_keeps_the_loop_open_when_it_needs_more():
@@ -155,3 +157,13 @@ def test_the_lawyer_is_consulted_once_per_round(corpus):
     # The next follow-up round may ask again.
     step.before_agent_callback(ctx)
     assert step.before_tool_callback(None, {}, ctx) is None
+
+
+def test_the_lawyer_tool_is_withdrawn_once_it_has_answered(corpus):
+    from types import SimpleNamespace
+    step = adk_agents.build_review_agent().sub_agents[1]
+    request = SimpleNamespace(config=SimpleNamespace(tools=["lawyer"]), tools_dict={"traffic_lawyer": 1})
+    step.before_model_callback(FakeContext({adk_agents.LAWYER_CALLS: 0}), request)
+    assert request.tools_dict
+    step.before_model_callback(FakeContext({adk_agents.LAWYER_CALLS: 1}), request)
+    assert request.config.tools is None and not request.tools_dict

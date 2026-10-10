@@ -120,3 +120,11 @@ def test_cost_is_returned_and_saved_after_tracking(client, cloud, monkeypatch):
     assert value is not None and value > 0
     assert saved.await_args.args[0]["estimated_ai_cost_usd"] == value
     assert costs.estimate() is None
+
+
+def test_a_clip_of_a_few_frames_is_refused_before_any_agent_runs(client, cloud, monkeypatch):
+    _, runner = cloud
+    monkeypatch.setattr(main, "clip_duration", AsyncMock(return_value=0.23))
+    response = client.post("/v1/review", json={"video_uri": "gs://test-videos/uploads/a"})
+    assert response.status_code == 422
+    runner.assert_not_called()

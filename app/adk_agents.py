@@ -99,10 +99,17 @@ def stop_when_decided(callback_context) -> None:
         verdict = raw if isinstance(raw, dict) else json.loads(raw)
     except (TypeError, ValueError):
         # An unreadable verdict is not a reason to keep spending rounds.
-        callback_context.actions.escalate = True
+        _stop(callback_context)
         return
     if not verdict.get("needs_more"):
-        callback_context.actions.escalate = True
+        _stop(callback_context)
+
+
+def _stop(callback_context) -> None:
+    # ADK only emits an after-agent event, the one LoopAgent checks for
+    # escalate, when the callback also changes state.
+    callback_context.state[STATE_STOPPED] = True
+    callback_context.actions.escalate = True
 
 
 def law_retrieval_tool() -> VertexAiRagRetrieval | None:
@@ -167,6 +174,7 @@ def build_lawyer_agent() -> LlmAgent:
 
 
 LAWYER_CALLS = "lawyer_step_calls"
+STATE_STOPPED = "review_stopped"
 
 
 def reset_lawyer_calls(callback_context) -> None:
@@ -190,6 +198,13 @@ def call_lawyer_once(tool, args, tool_context) -> dict | None:
     return None
 
 
+def hide_lawyer_once_answered(callback_context, llm_request) -> None:
+    """Leave the model nothing to call but its answer once the lawyer replied."""
+    if callback_context.state.get(LAWYER_CALLS, 0) >= 1:
+        llm_request.config.tools = None
+        llm_request.tools_dict.clear()
+
+
 def build_lawyer_step() -> LlmAgent:
     """Loop step that delegates to the lawyer through an AgentTool.
 
@@ -211,6 +226,7 @@ def build_lawyer_step() -> LlmAgent:
         ),
         tools=[AgentTool(agent=build_lawyer_agent())],
         before_agent_callback=reset_lawyer_calls,
+        before_model_callback=hide_lawyer_once_answered,
         before_tool_callback=call_lawyer_once,
         output_schema=LAWYER_SCHEMA,
         output_key=STATE_LEGAL,

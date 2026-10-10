@@ -87,6 +87,7 @@ DEFAULT_MODEL = "gemini-3.8-flash"
 # A long clip adds a window-analysis pass in front of that, so the budget grows
 # with the number of windows; Cloud Run allows an hour, which bounds it.
 REVIEW_TIMEOUT = 900
+MIN_CLIP_SECONDS = 1.0
 # Each window costs its own read, and then costs again downstream: more windows
 # make a longer merged timeline, which the lawyer and judge must reason over for
 # up to three rounds. A four minute clip at the default window measured past
@@ -401,6 +402,9 @@ async def review(body: ReviewRequest):
     # rather than started and abandoned at the deadline.
     duration = await clip_duration(body)
     benchmark_stage("metadata_check", stage_started)
+    # Gemini answers a clip of a few frames with a bare 400; say why instead.
+    if duration is not None and duration < MIN_CLIP_SECONDS:
+        raise HTTPException(422, f"Video must be at least {MIN_CLIP_SECONDS:g} second long")
     if duration is not None and duration > MAX_CLIP_DURATION:
         raise HTTPException(413, f"Video must be {MAX_CLIP_DURATION / 60:.0f} minutes or shorter")
     window = body.window_minutes * 60
