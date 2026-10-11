@@ -11,7 +11,7 @@ those in rather than show a guess as if it were read from the footage.
 """
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # The codes the dashboard charts. `emergency_lane` has no bar of its own but
 # persists in the fixtures, so a case carrying it is still shown.
@@ -106,6 +106,34 @@ def law_sources(findings: list[dict], vehicle_id: str, retrieved_at: str) -> lis
     return sources
 
 
+def stamped_incident(overlay: dict | None, at_seconds: float) -> dict:
+    """Date, time and place from the camera's burned-in stamp, where readable.
+
+    The stamp is the dashcam's own clock, so it is offered as a prefill the user
+    checks before reporting, and anything malformed is left for them to enter.
+    """
+    overlay = overlay if isinstance(overlay, dict) else {}
+    found: dict = {"date": None, "time": None, "location": None}
+    try:
+        clock = datetime.strptime(f"{overlay['date']} {overlay['time']}", "%Y-%m-%d %H:%M:%S")
+    except (KeyError, TypeError, ValueError):
+        clock = None
+    if clock is not None:
+        # The stamp was read at one moment; the offence may come later.
+        clock += timedelta(seconds=at_seconds - float(overlay.get("at_seconds") or 0))
+        found["date"], found["time"] = clock.strftime("%Y-%m-%d"), clock.strftime("%H:%M")
+    lat, lon = overlay.get("latitude"), overlay.get("longitude")
+    if (
+        isinstance(lat, (int, float))
+        and isinstance(lon, (int, float))
+        and -90 <= lat <= 90
+        and -180 <= lon <= 180
+        and (lat, lon) != (0, 0)
+    ):
+        found["location"] = f"{lat:.5f}, {lon:.5f}"
+    return found
+
+
 def build_case(
     review: dict, case_id: str, region: str = DEFAULT_REGION, created_at: datetime | None = None
 ) -> dict:
@@ -152,12 +180,10 @@ def build_case(
             "model": None,
         },
         "incident": {
-            # The clip carries no trustworthy date or place — a dashcam overlay
-            # is not read as fact — so these stay null for the user to fill.
-            "date": None,
-            "time": None,
+            **stamped_incident(
+                evidence.get("overlay"), offences[0]["atSeconds"] if offences else 0
+            ),
             "timeZone": TIME_ZONES.get(region, TIME_ZONES[DEFAULT_REGION]),
-            "location": None,
             "description": review.get("verdict") or None,
         },
         "offences": offences,

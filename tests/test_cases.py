@@ -109,7 +109,7 @@ def test_a_case_carries_what_the_dashboard_reads():
 
 def test_facts_the_footage_cannot_establish_stay_null():
     case = build_case(REVIEW, "RR-1", "MY")
-    # The contract asks the UI to collect these, not to show a guess.
+    # Without a readable stamp the UI collects these rather than show a guess.
     assert case["incident"]["date"] is None
     assert case["incident"]["location"] is None
     assert case["vehicle"]["model"] is None
@@ -144,3 +144,37 @@ def test_the_decision_trail_explains_why():
 def test_the_trail_survives_a_review_with_nothing_in_it():
     trail = decision_trail({}, "RR-6")
     assert trail["offences"] == [] and trail["citations"] == []
+
+
+def stamped(overlay):
+    review = {**REVIEW, "evidence": {**REVIEW.get("evidence", {}), "overlay": overlay}}
+    return build_case(review, "RR-1", "MY")["incident"]
+
+
+def test_the_dashcam_stamp_fills_the_incident_at_the_offence():
+    first = REVIEW["reportable"][0]["start_seconds"]
+    incident = stamped(
+        {
+            "at_seconds": first - 70,
+            "date": "2025-07-29",
+            "time": "23:59:30",
+            "latitude": 3.139,
+            "longitude": 101.6869,
+        }
+    )
+    # Read 70 s before the offence, which lands after midnight.
+    assert (incident["date"], incident["time"]) == ("2025-07-30", "00:00")
+    assert incident["location"] == "3.13900, 101.68690"
+
+
+@pytest.mark.parametrize(
+    "overlay",
+    [
+        None,
+        {"at_seconds": 0, "date": "29/07/2025", "time": "08:11:55"},
+        {"at_seconds": 0, "date": "2025-02-30", "time": "08:11:55"},
+        {"at_seconds": 0, "latitude": 0, "longitude": 0},
+    ],
+)
+def test_an_unreadable_stamp_is_left_for_the_user(overlay):
+    assert stamped(overlay) == {**stamped(None), "date": None, "time": None, "location": None}

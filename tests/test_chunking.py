@@ -187,3 +187,13 @@ def test_a_short_clip_is_always_affordable():
 
     assert windows_affordable(30, 60)
     assert windows_affordable(None, 60)
+
+
+def test_the_earliest_stamp_survives_the_merge_on_the_clip_clock():
+    from app.agents import Overlay
+
+    later = VideoReport(overlay=Overlay(at_seconds=2, date="2025-07-29", time="08:13:00"))
+    first = VideoReport(overlay=Overlay(at_seconds=5, date="2025-07-29", time="08:11:55"))
+    merged = merge([(60, later), (0, first)])
+    assert merged.overlay.time == "08:11:55" and merged.overlay.at_seconds == 5
+    assert merge([(0, VideoReport()), (60, later)]).overlay.at_seconds == 62

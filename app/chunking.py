@@ -118,6 +118,11 @@ def merge(reports: list[tuple[float, VideoReport]]) -> VideoReport:
                     existing.manoeuvres.append(move)
         if report.summary:
             summaries.append(f"[{offset:.0f}s+] {report.summary}")
+        # The earliest readable stamp; later ones only repeat the same clock.
+        if merged.overlay is None and report.overlay is not None:
+            merged.overlay = report.overlay.model_copy(
+                update={"at_seconds": report.overlay.at_seconds + offset}
+            )
 
     merged.timeline.sort(key=lambda e: e.start_seconds)
     for vehicle in merged.vehicles:
