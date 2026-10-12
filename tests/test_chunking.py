@@ -1,3 +1,5 @@
+import asyncio
+
 from app.agents import Hazard, Manoeuvre, ObservedVehicle, TimelineEntry, VideoReport
 from app.chunking import OVERLAP_SECONDS, WINDOW_SECONDS, merge, windows
 
@@ -239,3 +241,49 @@ def test_hazards_move_onto_the_clip_clock_and_overlap_reports_once():
 
 def test_a_report_without_hazards_still_parses():
     assert VideoReport.model_validate_json('{"timeline": [], "vehicles": []}').hazards == []
+
+
+def test_the_hazard_pass_replaces_the_analysts_hazards(monkeypatch):
+    from app import long_video
+
+    async def describe(*_):
+        return VideoReport.model_validate(
+            {
+                "timeline": [],
+                "vehicles": [],
+                "summary": "",
+                "hazards": [{"start_seconds": 1, "end_seconds": 2, "category": "other"}],
+            }
+        )
+
+    async def detect(*_):
+        return [Hazard(start_seconds=5, end_seconds=7, category="wrong_lane")]
+
+    monkeypatch.setattr(long_video, "HAZARD_PASS", True)
+    monkeypatch.setattr(long_video, "_describe_window", describe)
+    monkeypatch.setattr(long_video, "_detect_hazards", detect)
+    report = asyncio.run(long_video.analyse_window("gs://b/uploads/x", "video/mp4", 0, 60))
+    assert [h.category for h in report.hazards] == ["wrong_lane"]
+
+
+def test_a_failed_hazard_pass_keeps_the_analysts_hazards(monkeypatch):
+    from app import long_video
+
+    async def describe(*_):
+        return VideoReport.model_validate(
+            {
+                "timeline": [],
+                "vehicles": [],
+                "summary": "",
+                "hazards": [{"start_seconds": 1, "end_seconds": 2, "category": "other"}],
+            }
+        )
+
+    async def detect(*_):
+        return None
+
+    monkeypatch.setattr(long_video, "HAZARD_PASS", True)
+    monkeypatch.setattr(long_video, "_describe_window", describe)
+    monkeypatch.setattr(long_video, "_detect_hazards", detect)
+    report = asyncio.run(long_video.analyse_window("gs://b/uploads/x", "video/mp4", 0, 60))
+    assert [h.category for h in report.hazards] == ["other"]
