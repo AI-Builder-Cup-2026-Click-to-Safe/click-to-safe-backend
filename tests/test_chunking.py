@@ -171,15 +171,26 @@ def test_the_budget_shrinks_when_the_window_grows():
     assert review_timeout(1800, window=1800) < review_timeout(1800, window=60)
 
 
-def test_a_clip_that_cannot_finish_in_time_is_refused_up_front():
+def test_a_clip_that_cannot_finish_in_time_is_refused_up_front(monkeypatch):
     """Twenty minutes of waiting then a timeout is worse than an immediate 422."""
+    from app import main
     from app.main import windows_affordable
 
+    monkeypatch.setattr(main, "MAX_CONCURRENT_WINDOWS", 1)
     # Half an hour read a minute at a time is thirty-three sequential calls.
     assert not windows_affordable(1800, 60)
     # The same clip in larger windows fits.
     assert windows_affordable(1800, 300)
     assert windows_affordable(1800, 1800)
+
+
+def test_parallel_reads_make_room_for_more_windows(monkeypatch):
+    from app import main
+    from app.main import windows_affordable
+
+    monkeypatch.setattr(main, "MAX_CONCURRENT_WINDOWS", 4)
+    # Thirty-three windows read four at a time are nine waves, which fit.
+    assert windows_affordable(1800, 60)
 
 
 def test_a_short_clip_is_always_affordable():

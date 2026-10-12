@@ -26,9 +26,10 @@ from app.chunking import WINDOW_SECONDS, merge, windows
 
 logger = logging.getLogger(__name__)
 
-# How many windows may be read at once. Overridable so the cost of concurrency
-# can be measured against a real clip rather than guessed at.
-MAX_CONCURRENT_WINDOWS = int(os.getenv("WINDOW_CONCURRENCY", "1"))
+# How many windows may be read at once. Each read waits on Gemini rather than
+# this instance, so reading in parallel shortens a long review without adding
+# tokens: a 30 minute clip spent 283s reading seven windows one at a time.
+MAX_CONCURRENT_WINDOWS = int(os.getenv("WINDOW_CONCURRENCY", "4"))
 WINDOW_TIMEOUT = 240
 
 
