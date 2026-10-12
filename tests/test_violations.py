@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.prose import REPORT_PROSE_STYLE
 
 REPORT = {
     "violations": [
@@ -73,6 +74,8 @@ def test_video_is_sent_as_media_with_a_json_schema(client, cloud):
     kwargs = generate.call_args.kwargs
     assert kwargs["contents"][0].file_data.file_uri == uri
     assert kwargs["config"].response_mime_type == "application/json"
+    assert REPORT_PROSE_STYLE in kwargs["config"].system_instruction
+    generate.assert_awaited_once()
 
 
 def test_foreign_bucket_is_rejected_before_any_cloud_call(client, cloud):

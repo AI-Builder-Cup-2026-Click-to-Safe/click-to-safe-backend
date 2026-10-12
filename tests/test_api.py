@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from google.api_core.exceptions import NotFound
 
 from app import main
+from app.prose import REPORT_PROSE_STYLE
 
 
 @pytest.fixture
@@ -101,6 +102,8 @@ def test_video_is_passed_as_media_not_just_a_text_url(client, cloud):
     media = generate.call_args.kwargs["contents"][0]
     assert media.file_data.file_uri == uri
     assert media.file_data.mime_type == "video/mp4"
+    assert REPORT_PROSE_STYLE in generate.call_args.kwargs["config"].system_instruction
+    generate.assert_awaited_once()
 
 
 def test_unfinished_upload_is_404(client, cloud):

@@ -1,7 +1,11 @@
 import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from app.agents import Hazard, Manoeuvre, ObservedVehicle, TimelineEntry, VideoReport
 from app.chunking import OVERLAP_SECONDS, WINDOW_SECONDS, merge, windows
+from app.prose import REPORT_PROSE_STYLE
 
 
 def test_a_short_clip_is_one_window():
@@ -241,6 +245,54 @@ def test_hazards_move_onto_the_clip_clock_and_overlap_reports_once():
 
 def test_a_report_without_hazards_still_parses():
     assert VideoReport.model_validate_json('{"timeline": [], "vehicles": []}').hazards == []
+
+
+def test_both_window_requests_use_prose_guidance_without_changing_machine_identifiers(monkeypatch):
+    from app import long_video
+
+    hazard = {
+        "start_seconds": 1,
+        "end_seconds": 2,
+        "category": "wrong_lane",
+        "actor_id": "ego",
+        "description": "The camera vehicle crosses into the opposing lane.",
+    }
+    observed = {
+        "vehicle_id": "ego",
+        "appearance": "Camera vehicle",
+        "is_ego": True,
+        "manoeuvres": [],
+    }
+
+    async def respond(**kwargs):
+        data = {"hazards": [hazard]}
+        if kwargs["config"].system_instruction:
+            data.update(timeline=[], vehicles=[observed], summary="One lane crossing is visible.")
+        return SimpleNamespace(text=json.dumps(data))
+
+    generate = AsyncMock(side_effect=respond)
+    client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate)))
+    monkeypatch.setattr(long_video, "window_client", lambda: client)
+    monkeypatch.setattr(long_video, "HAZARD_PASS", True)
+    result = asyncio.run(
+        long_video.analyse_window("gs://test-videos/uploads/a", "video/mp4", 55, 115)
+    )
+
+    assert generate.await_count == 2  # Existing analyst and hazard passes only.
+    for call in generate.await_args_list:
+        request = call.kwargs
+        instruction = request["config"].system_instruction or request["contents"][1].text
+        assert REPORT_PROSE_STYLE in instruction
+        assert request["config"].response_mime_type == "application/json"
+        media = request["contents"][0]
+        assert media.video_metadata.start_offset == "55s"
+        assert media.video_metadata.end_offset == "115s"
+    assert result.vehicles[0].vehicle_id == "ego"
+    assert result.vehicles[0].is_ego is True
+    assert result.hazards[0].actor_id == "ego"
+    assert result.hazards[0].category == "wrong_lane"
+    assert result.hazards[0].start_seconds == 1
+    assert result.hazards[0].end_seconds == 2
 
 
 def test_the_hazard_pass_replaces_the_analysts_hazards(monkeypatch):

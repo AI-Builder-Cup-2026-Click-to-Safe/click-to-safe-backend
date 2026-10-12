@@ -9,6 +9,8 @@ from typing import Literal
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.prose import REPORT_PROSE_STYLE
+
 # A closed vocabulary keeps the same violation from being reported under many
 # different free-text names, which would make results impossible to aggregate.
 VIOLATION_TYPES = [
@@ -40,11 +42,11 @@ ViolationType = Literal[
 ]
 
 REVIEW_INSTRUCTION = (
-    "You review dashcam footage recorded by the ego vehicle and report traffic "
+    "You review dashcam footage recorded by the camera vehicle and report traffic "
     "violations committed by OTHER vehicles.\n"
     "Rules:\n"
     "- Report only violations supported by what is visibly observable in the frame.\n"
-    "- Do not report the ego (recording) vehicle's own behavior.\n"
+    "- Do not report the camera vehicle's own behavior.\n"
     "- Timestamps are seconds from the start of the clip.\n"
     "- Identify vehicles by visible appearance (color, body type, relative position). "
     "Never guess or invent a license plate number.\n"
@@ -57,6 +59,7 @@ REVIEW_INSTRUCTION = (
     "- Write description, vehicle, evidence and summary in English, regardless of the "
     "language spoken or displayed in the video.\n"
     "This is an automated review aid, not a legal determination."
+    "\n\n" + REPORT_PROSE_STYLE
 )
 
 # Mirrors the Pydantic models below; sent to the model to constrain decoding.

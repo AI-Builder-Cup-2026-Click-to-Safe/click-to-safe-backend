@@ -4,6 +4,7 @@ import pytest
 
 from app import adk_agents
 from app.agents import MAX_FOLLOW_UP_ROUNDS
+from app.prose import REPORT_PROSE_STYLE
 
 
 class FakeActions:
@@ -28,8 +29,14 @@ def test_loop_is_bounded_to_the_allowed_follow_up_rounds(corpus):
 
 
 def test_pipeline_runs_analyst_then_lawyer_then_judge(corpus):
-    names = [s.name for s in adk_agents.build_review_agent().sub_agents]
-    assert names == ["video_analyst", "lawyer_step", "judge"]
+    analyst, lawyer_step, judge = adk_agents.build_review_agent().sub_agents
+    assert [s.name for s in (analyst, lawyer_step, judge)] == [
+        "video_analyst",
+        "lawyer_step",
+        "judge",
+    ]
+    for specialist in (analyst, lawyer_step.tools[0].agent, judge):
+        assert REPORT_PROSE_STYLE in specialist.instruction
 
 
 def test_lawyer_is_called_as_a_tool_so_retrieval_never_sees_the_video(corpus):
