@@ -208,3 +208,19 @@ def test_the_earliest_stamp_survives_the_merge_on_the_clip_clock():
     merged = merge([(60, later), (0, first)])
     assert merged.overlay.time == "08:11:55" and merged.overlay.at_seconds == 5
     assert merge([(0, VideoReport()), (60, later)]).overlay.at_seconds == 62
+
+
+def test_a_clarity_on_another_scale_keeps_the_window():
+    # Gemini answered clarity 3 on a 30 minute clip and every window was dropped.
+    raw = (
+        '{"timeline": [], "summary": "", "vehicles": [{"vehicle_id": "v1", '
+        '"appearance": "red car", "is_ego": false, '
+        '"manoeuvres": [{"start_seconds": 1, "description": "turns", "clarity": 3}]}]}'
+    )
+    report = VideoReport.model_validate_json(raw)
+    assert report.vehicles[0].manoeuvres[0].clarity == 0.5
+
+
+def test_a_misread_stamp_keeps_the_window():
+    raw = '{"timeline": [], "vehicles": [], "summary": "", "overlay": {"latitude": 310.5}}'
+    assert VideoReport.model_validate_json(raw).overlay is None
