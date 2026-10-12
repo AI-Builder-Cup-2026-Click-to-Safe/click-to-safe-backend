@@ -519,7 +519,10 @@ async def list_reviews(limit: int = history.DEFAULT_PAGE, before: str = ""):
         raise HTTPException(503, "Review history is unavailable") from exc
     return {
         # Signed per read, since a playback link expires.
-        "reviews": [history.with_playback(row) for row in rows],
+        # Each link is an IAM call; signed side by side, off the event loop.
+        "reviews": await asyncio.gather(
+            *(asyncio.to_thread(history.with_playback, row) for row in rows)
+        ),
         # Hand back the cursor for the next page, or null at the end.
         "next_before": (
             rows[-1]["created_at"] if len(rows) >= min(limit, history.MAX_PAGE) else None
@@ -537,7 +540,7 @@ async def read_review(review_id: str):
         raise HTTPException(503, "Review history is unavailable") from exc
     if record is None:
         raise HTTPException(404, "No such review")
-    return history.with_playback(record)
+    return await asyncio.to_thread(history.with_playback, record)
 
 
 @app.get("/v1/impact")

@@ -12,6 +12,7 @@ reviews then reads a hundred small documents instead of a hundred large ones.
 
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -144,6 +145,36 @@ async def delete(review_id: str) -> bool:
 PLAYBACK_URL_TTL = timedelta(hours=6)
 
 
+_signer_lock = threading.Lock()
+
+
+@lru_cache(maxsize=1)
+def _signer():
+    """One storage client and one set of credentials, reused for every link.
+
+    Building them per link cost a token fetch each time, and a page of reviews
+    signs three links a row.
+    """
+    import google.auth
+    from google.cloud import storage
+
+    # The client first: without a project there is nothing to sign, and it
+    # fails at once rather than after probing for credentials.
+    client = storage.Client(project=os.environ["APP_PROJECT_ID"])
+    credentials, _ = google.auth.default()
+    return client, credentials
+
+
+def _token(credentials) -> str | None:
+    import google.auth.transport.requests
+
+    # Refreshed only when it has lapsed; threads share it, so one refreshes.
+    with _signer_lock:
+        if not credentials.valid:
+            credentials.refresh(google.auth.transport.requests.Request())
+        return getattr(credentials, "token", None)
+
+
 def playable(uri: str | None) -> str | None:
     """A browser-playable URL for a gs:// object, or None.
 
@@ -156,26 +187,21 @@ def playable(uri: str | None) -> str | None:
     if not object_name:
         return None
     try:
-        import google.auth
-        import google.auth.transport.requests
-        from google.cloud import storage
-
-        blob = (
-            storage.Client(project=os.environ["APP_PROJECT_ID"])
-            .bucket(bucket_name)
-            .blob(object_name)
-        )
+        client, credentials = _signer()
         # On Cloud Run there is no key file to sign with: credentials come from
         # the metadata server. Signing is delegated to IAM instead, which needs
         # the account's own email and a live access token.
-        credentials, _ = google.auth.default()
-        credentials.refresh(google.auth.transport.requests.Request())
-        return blob.generate_signed_url(
-            expiration=PLAYBACK_URL_TTL,
-            method="GET",
-            version="v4",
-            service_account_email=getattr(credentials, "service_account_email", None),
-            access_token=getattr(credentials, "token", None),
+        token = _token(credentials)
+        return (
+            client.bucket(bucket_name)
+            .blob(object_name)
+            .generate_signed_url(
+                expiration=PLAYBACK_URL_TTL,
+                method="GET",
+                version="v4",
+                service_account_email=getattr(credentials, "service_account_email", None),
+                access_token=token,
+            )
         )
     except Exception as exc:
         # A record without a playable link is still a record. Log the reason:
