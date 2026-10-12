@@ -12,7 +12,7 @@ before anything is merged; without that every timestamp past the first minute is
 wrong.
 """
 
-from app.agents import TimelineEntry, VideoReport
+from app.agents import Hazard, TimelineEntry, VideoReport
 
 # A minute by default. The overlap only has to be long enough to hold a lane
 # change or an overtake whole.
@@ -69,7 +69,16 @@ def _shift(report: VideoReport, offset: float) -> VideoReport:
         for move in vehicle.manoeuvres:
             move.start_seconds += offset
             move.end_seconds += offset
+    for hazard in report.hazards:
+        hazard.start_seconds += offset
+        hazard.end_seconds += offset
     return report
+
+
+def _same_hazard(a: Hazard, b: Hazard) -> bool:
+    """Both neighbouring windows report a hazard that falls in their overlap."""
+    overlaps = a.start_seconds < b.end_seconds and b.start_seconds < a.end_seconds
+    return overlaps and a.category == b.category
 
 
 def _same_event(a: TimelineEntry, b: TimelineEntry) -> bool:
@@ -116,6 +125,9 @@ def merge(reports: list[tuple[float, VideoReport]]) -> VideoReport:
                     for kept in existing.manoeuvres
                 ):
                     existing.manoeuvres.append(move)
+        for hazard in shifted.hazards:
+            if not any(_same_hazard(hazard, kept) for kept in merged.hazards):
+                merged.hazards.append(hazard)
         if report.summary:
             summaries.append(f"[{offset:.0f}s+] {report.summary}")
         # The earliest readable stamp; later ones only repeat the same clock.
@@ -125,6 +137,7 @@ def merge(reports: list[tuple[float, VideoReport]]) -> VideoReport:
             )
 
     merged.timeline.sort(key=lambda e: e.start_seconds)
+    merged.hazards.sort(key=lambda h: h.start_seconds)
     for vehicle in merged.vehicles:
         vehicle.manoeuvres.sort(key=lambda m: m.start_seconds)
     merged.summary = " ".join(summaries)

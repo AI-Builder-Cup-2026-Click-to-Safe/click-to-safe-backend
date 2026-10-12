@@ -56,8 +56,8 @@ def window_client():
 
 def window_request(focus: str = "") -> str:
     request = (
-        "Analyse this segment of dashcam footage. Report the timeline and the "
-        "vehicles exactly as instructed. Timestamps are relative to the START of "
+        "Analyse this segment of dashcam footage. Report the timeline, the "
+        "vehicles and the hazards exactly as instructed. Timestamps are relative to the START of "
         "this segment, beginning at 0."
     )
     if focus:
@@ -89,7 +89,8 @@ async def analyse_window(
             window_client().aio.models.generate_content(
                 model=_vision_model(),
                 contents=[part, types.Part.from_text(text=window_request(focus))],
-                config=agent_config("video"),
+                # Hazards add to what a window writes; leave room so the JSON is never cut off.
+                config=agent_config("video", max_output_tokens=16384),
             ),
             timeout=WINDOW_TIMEOUT,
         )

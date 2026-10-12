@@ -124,6 +124,7 @@ async def run_review(
         "evidence": {
             "timeline": video.get("timeline", []) if isinstance(video, dict) else [],
             "vehicles": video.get("vehicles", []) if isinstance(video, dict) else [],
+            "hazards": video.get("hazards", []) if isinstance(video, dict) else [],
             "overlay": video.get("overlay") if isinstance(video, dict) else None,
             "legal_analysis": legal,
         },

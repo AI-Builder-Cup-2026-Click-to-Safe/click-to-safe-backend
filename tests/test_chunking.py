@@ -1,4 +1,4 @@
-from app.agents import Manoeuvre, ObservedVehicle, TimelineEntry, VideoReport
+from app.agents import Hazard, Manoeuvre, ObservedVehicle, TimelineEntry, VideoReport
 from app.chunking import OVERLAP_SECONDS, WINDOW_SECONDS, merge, windows
 
 
@@ -224,3 +224,18 @@ def test_a_clarity_on_another_scale_keeps_the_window():
 def test_a_misread_stamp_keeps_the_window():
     raw = '{"timeline": [], "vehicles": [], "summary": "", "overlay": {"latitude": 310.5}}'
     assert VideoReport.model_validate_json(raw).overlay is None
+
+
+def test_hazards_move_onto_the_clip_clock_and_overlap_reports_once():
+    def hazard(start):
+        return Hazard(start_seconds=start, end_seconds=start + 2, category="wrong_lane")
+
+    first = VideoReport(hazards=[hazard(57)])
+    # The next window starts at 55s, so its 2s is the clip's 57s: the same event.
+    second = VideoReport(hazards=[hazard(2), hazard(30)])
+    merged = merge([(55, second), (0, first)])
+    assert [h.start_seconds for h in merged.hazards] == [57, 85]
+
+
+def test_a_report_without_hazards_still_parses():
+    assert VideoReport.model_validate_json('{"timeline": [], "vehicles": []}').hazards == []

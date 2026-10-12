@@ -19,10 +19,17 @@ MAX_FOLLOW_UP_ROUNDS = 2
 
 VIDEO_INSTRUCTION = (
     "You analyse dashcam footage recorded by the ego vehicle.\n"
-    "Produce two views of the same clip:\n"
+    "Produce three views of the same clip:\n"
     "1. timeline: what happens in each time window, in order.\n"
     "2. vehicles: one entry per vehicle that is prominent enough to describe, with "
     "the manoeuvres it performs and the timestamps where each is visible.\n"
+    "3. hazards: every dangerous or unlawful action by any road user, including "
+    "pedestrians, cyclists, the ego vehicle and objects on the road. Go through the "
+    "whole clip; short and brief actions count. One entry per action, with "
+    "start_seconds and end_seconds bounding only the action itself (usually one to "
+    "five seconds), not the scene around it. actor_id is the vehicle_id, 'ego', or "
+    "a short label such as pedestrian_1. List a hazard you are unsure of and say so "
+    "in description rather than leaving it out.\n"
     "Rules:\n"
     "- Describe only what is visually observable. Never infer intent or speed "
     "figures you cannot see.\n"
@@ -41,6 +48,17 @@ VIDEO_INSTRUCTION = (
     "(Malaysian dashcams print the day before the month unless the layout shows "
     "otherwise), 24-hour time, coordinates in decimal degrees. Omit overlay, or "
     "any field of it, that you cannot read clearly."
+)
+
+# Matches the myDashCam labels, so hazards can be scored against them directly.
+HAZARD_CATEGORIES = (
+    "sudden_lane_change",
+    "illegal_u_turn",
+    "illegal_crossing",
+    "dangerous_overtake",
+    "object_on_road",
+    "wrong_lane",
+    "other",
 )
 
 VIDEO_SCHEMA = {
@@ -85,6 +103,20 @@ VIDEO_SCHEMA = {
                 "required": ["vehicle_id", "appearance", "is_ego", "manoeuvres"],
             },
         },
+        "hazards": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "start_seconds": {"type": "number"},
+                    "end_seconds": {"type": "number"},
+                    "category": {"type": "string", "enum": list(HAZARD_CATEGORIES)},
+                    "actor_id": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["start_seconds", "end_seconds", "category", "description"],
+            },
+        },
         "summary": {"type": "string"},
         "overlay": {
             "type": "object",
@@ -98,7 +130,7 @@ VIDEO_SCHEMA = {
             "required": ["at_seconds"],
         },
     },
-    "required": ["timeline", "vehicles", "summary"],
+    "required": ["timeline", "vehicles", "hazards", "summary"],
 }
 
 
@@ -137,6 +169,15 @@ class TimelineEntry(BaseModel):
     road_context: str = ""
 
 
+class Hazard(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(default=0, ge=0)
+    category: str = "other"
+    actor_id: str = ""
+    description: str = ""
+
+
 class Overlay(BaseModel):
     """The camera's own date/time/GPS stamp, as read off the picture."""
 
@@ -152,6 +193,7 @@ class VideoReport(BaseModel):
     model_config = ConfigDict(extra="ignore")
     timeline: list[TimelineEntry] = Field(default_factory=list)
     vehicles: list[ObservedVehicle] = Field(default_factory=list)
+    hazards: list[Hazard] = Field(default_factory=list)
     summary: str = ""
     overlay: Overlay | None = None
 
@@ -247,6 +289,8 @@ JUDGE_INSTRUCTION = (
     "- Never report the ego vehicle.\n"
     "- Base every legal ground on the lawyer's citations. Do not introduce a "
     "provision that was not cited to you.\n"
+    "- Work through every entry in the video observations' hazards list, and "
+    "check the timeline and vehicles for anything it missed.\n"
     "- If a decision genuinely depends on detail you do not have, set needs_more "
     "true and put specific questions in questions_for_video (what to re-examine in "
     "the footage) and questions_for_lawyer (what provisions to look up). Ask only "
