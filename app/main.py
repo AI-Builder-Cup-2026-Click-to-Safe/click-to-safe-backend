@@ -566,6 +566,8 @@ class ReportingPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Only a person moves a case to sent, which is what the impact screen counts.
     reporting_status: Literal["opened", "sent"]
+    # The plate as the reporter confirmed it, when Gemini could not read one.
+    plate: str | None = Field(default=None, max_length=20)
 
 
 @app.patch("/v1/reviews/{review_id}/reporting")
@@ -576,7 +578,7 @@ async def set_reporting(review_id: str, body: ReportingPatch):
     confirmed and sent it, so the model must not mark its own work as reported.
     """
     try:
-        updated = await history.set_reporting_status(review_id, body.reporting_status)
+        updated = await history.set_reporting_status(review_id, body.reporting_status, body.plate)
     except Exception as exc:
         logger.error("Could not update reporting status (%s)", type(exc).__name__)
         raise HTTPException(503, "Review history is unavailable") from exc

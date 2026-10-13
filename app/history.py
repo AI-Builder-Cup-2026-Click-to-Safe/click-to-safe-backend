@@ -266,11 +266,12 @@ def tally(summaries: list[dict], today: str) -> dict:
     matter: a plate seen in three cases is one snitch but three sightings, and
     an offence repeated within a case counts each time.
     """
-    # Distinct plates in cases a person actually confirmed and sent. A case the
-    # model produced but nobody sent is not a report, so it is not counted.
-    sent_plates = {
-        s["plate"] for s in summaries if s.get("plate") and s.get("reporting_status") == "sent"
-    }
+    # Reports a person actually confirmed and sent; a case the model produced
+    # but nobody sent is not a report. One plate reported twice is one driver,
+    # and a report with no known plate still counts once.
+    sent = [s for s in summaries if s.get("reporting_status") == "sent"]
+    sent_plates = {s["plate"] for s in sent if s.get("plate")}
+    unplated = sum(1 for s in sent if not s.get("plate"))
 
     sightings: dict[str, int] = {}
     occurrences: dict[str, int] = {}
@@ -283,7 +284,7 @@ def tally(summaries: list[dict], today: str) -> dict:
 
     most = max(sightings.items(), key=lambda kv: kv[1], default=None)
     return {
-        "snitchedCount": len(sent_plates),
+        "snitchedCount": len(sent_plates) + unplated,
         # An issued fine is confirmed by an authority, and nothing here is wired
         # to one, so claiming any number would be inventing enforcement.
         "billedCount": 0,
@@ -305,7 +306,7 @@ async def impact(period: str = "all", now: datetime | None = None) -> dict:
     return tally(rows, at.date().isoformat())
 
 
-async def set_reporting_status(review_id: str, status: str) -> bool:
+async def set_reporting_status(review_id: str, status: str, plate: str | None = None) -> bool:
     """Mark a case opened or sent. True when the review existed.
 
     The summary and the stored case both carry the status, and the impact
@@ -329,5 +330,12 @@ async def set_reporting_status(review_id: str, status: str) -> bool:
             },
         }
         await db.collection(RECORDS).document(review_id).set({**stored, "case": case})
-    await db.collection(SUMMARIES).document(review_id).set({"reporting_status": status}, merge=True)
+    update = {"reporting_status": status}
+    # A plate typed by the reporter fills one the model could not read; it never
+    # replaces one the footage already gave.
+    typed = " ".join((plate or "").upper().split())
+    summary = await db.collection(SUMMARIES).document(review_id).get()
+    if typed and not (summary.to_dict() or {}).get("plate"):
+        update["plate"] = typed
+    await db.collection(SUMMARIES).document(review_id).set(update, merge=True)
     return True

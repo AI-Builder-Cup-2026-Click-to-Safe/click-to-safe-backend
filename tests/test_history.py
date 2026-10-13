@@ -35,8 +35,8 @@ class FakeRef:
     def __init__(self, store, key):
         self.store, self.key = store, key
 
-    async def set(self, data):
-        self.store[self.key] = data
+    async def set(self, data, merge=False):
+        self.store[self.key] = {**(self.store.get(self.key) or {}), **data} if merge else data
 
     async def get(self):
         return FakeDoc(self.store.get(self.key))
@@ -275,7 +275,8 @@ def test_offences_are_counted_per_occurrence():
 
 def test_a_case_without_a_plate_is_not_a_sighting():
     out = history.tally([summary(None, "sent", ["road_rage"])], "2026-10-08")
-    assert out["mostSpotted"] is None and out["snitchedCount"] == 0
+    # Not a sighting, but still a report a person sent.
+    assert out["mostSpotted"] is None and out["snitchedCount"] == 1
     # The offence still happened, so it is still counted.
     assert out["offenceOccurrences"] == {"road_rage": 1}
 
@@ -308,3 +309,22 @@ def test_an_unknown_period_is_rejected(client, db):
 async def test_cost_survives_history_storage_and_detail_read(db):
     review_id = await history.save({**RESULT, "estimated_ai_cost_usd": 0.002049})
     assert (await history.get(review_id))["estimated_ai_cost_usd"] == 0.002049
+
+
+def test_reports_without_a_plate_each_count_once():
+    out = history.tally(
+        [summary(None, "sent"), summary(None, "sent"), summary("AAA 1", "sent")], "2026-10-08"
+    )
+    assert out["snitchedCount"] == 3
+
+
+@pytest.mark.anyio
+async def test_a_typed_plate_fills_one_the_footage_did_not_give(db):
+    db.collections[history.RECORDS] = {"r1": {"case": {"reporting": {}}}, "r2": {"case": {}}}
+    db.collections[history.SUMMARIES] = {"r1": {"plate": None}, "r2": {"plate": "WC 7178 W"}}
+    assert await history.set_reporting_status("r1", "sent", " wxy  2048 ")
+    assert await history.set_reporting_status("r2", "sent", "OTHER 1")
+    summaries = db.collections[history.SUMMARIES]
+    assert summaries["r1"] == {"plate": "WXY 2048", "reporting_status": "sent"}
+    # What the footage showed is never replaced by what was typed.
+    assert summaries["r2"]["plate"] == "WC 7178 W"
