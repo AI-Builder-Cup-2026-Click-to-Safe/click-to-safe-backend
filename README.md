@@ -7,35 +7,9 @@ Built end-to-end on Google Cloud, serverless at every tier.
 
 ## How a review runs
 
-```mermaid
-flowchart LR
-    app["📱 Click-to-Safe app<br/>record or upload a clip"]
-    api["☁️ Public API<br/>Cloud Run · FastAPI"]
-    store[("Cloud Storage<br/>+ Firestore")]
-
-    subgraph agents["✦ Agent Platform · ADK · gemini-3.8-flash"]
-        direction TB
-        analyst["1 · Analyst<br/>offence, plate, time"]
-        lawyer["2 · Lawyer<br/>cites the statute"]
-        judge["3 · Judge<br/>decides what is reported"]
-        analyst --> lawyer --> judge
-        judge -.->|send back · max 2| analyst
-    end
-
-    rag[("RAG Engine<br/>+ Vector Search<br/>Act 1987")]
-    review["You review<br/>name and ID added here,<br/>never sent to Gemini"]
-    send["WhatsApp<br/>to the authority"]
-
-    app -->|clip| api
-    api -->|run| analyst
-    lawyer <-->|retrieve| rag
-    judge -->|verdict| api
-    api --> store
-    api -->|draft| review --> send
-
-    style judge fill:#fde8e8,stroke:#d93025
-    style rag fill:#f1f3f4,stroke:#80868b
-```
+![Architecture: the app uploads a clip, three Gemini agents on Agent Runtime
+review it against the statute via RAG Engine, and the driver reviews the draft
+before sending it to the authority](docs/architecture.png)
 
 The loop runs **at most 3 rounds** (`MAX_FOLLOW_UP_ROUNDS = 2` plus the first
 pass), so the Judge can send a draft back for more evidence but the agents can
@@ -43,24 +17,11 @@ never argue forever.
 
 ## The stack
 
-**Google Cloud does the thinking. Open source does the plumbing.**
-
-| AI and agents | Grounding and data | Platform and ops | Open source |
-|---|---|---|---|
-| **Gemini 3.8 Flash**<br>video, reasoning, boxes | **RAG Engine**<br>managed retrieval over the law | **Cloud Run**<br>2 vCPU, scales to zero | **Python · FastAPI**<br>async JSON API |
-| **Agent Platform**<br>Gemini Enterprise | **Vector Search**<br>statute and past-case index | **Secret Manager**<br>API tokens | **ffmpeg**<br>bounding-box overlays |
-| **ADK**<br>LoopAgent, AgentTool | **Cloud Storage**<br>clips, overlays, excerpts | **IAM**<br>least-privilege accounts | **Terraform · Docker**<br>infrastructure as code |
-| **Agent Runtime**<br>managed agent hosting | **Firestore**<br>cases and decision history | **Logging and Trace**<br>time per agent step | **GitHub Actions**<br>198 tests, push to deploy |
-| **Gen AI SDK**<br>`google-genai` | | **Artifact Registry**<br>container images | |
-
-### Why these choices
-
-- **Why Flash, not a bigger model** — it reads video natively, at Flash prices.
-  Every review reports its own estimated cost.
-- **Why a loop with a hard stop** — LoopAgent lets the Judge send drafts back,
-  capped so it cannot argue forever.
-- **Why RAG, not fine-tuning** — laws change and differ by country. A new
-  country means a new corpus, not a new model.
+![The stack: Gemini 3.8 Flash, Agent Platform, ADK and Agent Runtime for the
+agents; RAG Engine, Vector Search, Cloud Storage and Firestore for grounding and
+data; Cloud Run, Secret Manager, IAM, Logging and Artifact Registry for the
+platform; Python, ffmpeg, Terraform and GitHub Actions as the open-source
+layer](docs/stack.png)
 
 ## API at a glance
 
