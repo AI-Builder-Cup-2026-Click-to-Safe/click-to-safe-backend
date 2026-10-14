@@ -1,15 +1,95 @@
-# Prototype — Gemini video analysis server
+# Click-to-Safe — backend
+
+Dashcam clip in, a citation-backed traffic-violation report out.
+**Three Gemini agents review the footage; the Judge's whole job is to say no.**
+
+Built end-to-end on Google Cloud, serverless at every tier.
+
+## How a review runs
+
+```mermaid
+flowchart LR
+    app["📱 Click-to-Safe app<br/>record or upload a clip"]
+    api["☁️ Public API<br/>Cloud Run · FastAPI"]
+    store[("Cloud Storage<br/>+ Firestore")]
+
+    subgraph agents["✦ Agent Platform · ADK · gemini-3.8-flash"]
+        direction TB
+        analyst["1 · Analyst<br/>offence, plate, time"]
+        lawyer["2 · Lawyer<br/>cites the statute"]
+        judge["3 · Judge<br/>decides what is reported"]
+        analyst --> lawyer --> judge
+        judge -.->|send back · max 2| analyst
+    end
+
+    rag[("RAG Engine<br/>+ Vector Search<br/>Act 1987")]
+    review["You review<br/>name and ID added here,<br/>never sent to Gemini"]
+    send["WhatsApp<br/>to the authority"]
+
+    app -->|clip| api
+    api -->|run| analyst
+    lawyer <-->|retrieve| rag
+    judge -->|verdict| api
+    api --> store
+    api -->|draft| review --> send
+
+    style judge fill:#fde8e8,stroke:#d93025
+    style rag fill:#f1f3f4,stroke:#80868b
+```
+
+The loop runs **at most 3 rounds** (`MAX_FOLLOW_UP_ROUNDS = 2` plus the first
+pass), so the Judge can send a draft back for more evidence but the agents can
+never argue forever.
+
+## The stack
+
+**Google Cloud does the thinking. Open source does the plumbing.**
+
+| AI and agents | Grounding and data | Platform and ops | Open source |
+|---|---|---|---|
+| **Gemini 3.8 Flash**<br>video, reasoning, boxes | **RAG Engine**<br>managed retrieval over the law | **Cloud Run**<br>2 vCPU, scales to zero | **Python · FastAPI**<br>async JSON API |
+| **Agent Platform**<br>Gemini Enterprise | **Vector Search**<br>statute and past-case index | **Secret Manager**<br>API tokens | **ffmpeg**<br>bounding-box overlays |
+| **ADK**<br>LoopAgent, AgentTool | **Cloud Storage**<br>clips, overlays, excerpts | **IAM**<br>least-privilege accounts | **Terraform · Docker**<br>infrastructure as code |
+| **Agent Runtime**<br>managed agent hosting | **Firestore**<br>cases and decision history | **Logging and Trace**<br>time per agent step | **GitHub Actions**<br>198 tests, push to deploy |
+| **Gen AI SDK**<br>`google-genai` | | **Artifact Registry**<br>container images | |
+
+### Why these choices
+
+- **Why Flash, not a bigger model** — it reads video natively, at Flash prices.
+  Every review reports its own estimated cost.
+- **Why a loop with a hard stop** — LoopAgent lets the Judge send drafts back,
+  capped so it cannot argue forever.
+- **Why RAG, not fine-tuning** — laws change and differ by country. A new
+  country means a new corpus, not a new model.
+
+## API at a glance
+
+| Endpoint | What it does |
+|---|---|
+| `POST /v1/uploads` | Hand back a signed URL; the clip goes straight to Cloud Storage |
+| `POST /v1/review` | Run the three agents over the clip and return a verdict |
+| `GET /v1/reviews` | Page through finished reviews |
+| `GET /v1/reviews/{id}` | One review, with signed playback URLs |
+| `PATCH /v1/reviews/{id}/reporting` | Mark a case sent |
+| `GET /v1/impact` | Counters for the impact screen |
+
+Video never passes through the API: the app `PUT`s it straight to Cloud Storage
+with a signed URL, and only the `gs://` URI is sent for review. Playback URLs
+are signed through IAM, so the bucket is never public.
+
+Full reference: [Public API on Cloud Run](#public-api-on-cloud-run).
+
+---
+
+## Deploying it
 
 GitHub Actions → Docker → Artifact Registry → Terraform → **Agent Runtime** and
 **Cloud Run**. One image serves both: Agent Runtime for IAM-authenticated backend
-callers, and Cloud Run for public callers holding a shared token — see
-[Public API on Cloud Run](#public-api-on-cloud-run).
-The target project is configured per repository and the runtime region is `us-central1`.
+callers, and Cloud Run for public callers holding a shared token. The target
+project is configured per repository; the runtime region is `us-central1`.
 
 This follows Google's [Terraform agent deployment guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/runtime/use-terraform)
 and the [container runtime contract](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/runtime/runtime-contract).
-Instead of the weather ADK demo, video analysis is implemented with FastAPI and the
-Google Gen AI SDK. ADK sessions, memory, and Playground chat are not included.
 
 ## First deployment
 
