@@ -172,6 +172,23 @@ recreating existing resources.
 
 ## Deployment pipeline
 
+Reviews include a signed `thumbnail_url`, also exposed as `case.evidence.thumbnailUrl`.
+The server creates a 320-pixel JPEG at the first cited moment (one second for a clean
+review), using the annotated video when available and the original otherwise. JPEGs
+are reused by source object generation and timestamp; links expire after six hours.
+Existing history can be populated with ADC credentials and `APP_PROJECT_ID`:
+
+```bash
+uv run python -m app.thumbnail_backfill          # inspect record count, no writes
+uv run python -m app.thumbnail_backfill --apply  # create missing images and update URI fields
+```
+
+Backfill updates only `thumbnail_uri` in each record and summary, preserving user
+edits and reporting/dismissal state. It is safe to rerun; failures report review IDs
+and produce a nonzero exit code. Dismissal is a separate boolean, updated with
+`PATCH /v1/reviews/{id}/dismissal` and `{"dismissed": true}`; dismissed cases remain
+readable in history but do not contribute to Impact aggregates.
+
 - PR: Python lint/format/tests, Terraform fmt/validate, shellcheck, Docker build and a
   container health check.
 - Push to `main` or a manual run: the same CI passes → prepare the state bucket → apply

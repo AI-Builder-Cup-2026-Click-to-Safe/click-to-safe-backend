@@ -69,6 +69,10 @@ def test_public_request_without_a_token_is_rejected(public_client):
     response = public_client.post("/v1/review", json={"video_uri": "gs://test-videos/uploads/x"})
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert (
+        public_client.patch("/v1/reviews/example/dismissal", json={"dismissed": True}).status_code
+        == 401
+    )
 
 
 def test_public_request_with_a_wrong_token_is_rejected(public_client):

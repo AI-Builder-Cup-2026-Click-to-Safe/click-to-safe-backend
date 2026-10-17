@@ -25,7 +25,7 @@ from google.cloud import storage
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app import auth, costs, history, overlay
+from app import auth, costs, history, overlay, thumbnails
 from app.adk_runner import run_review
 from app.benchmark import begin_request, emit, end_request
 from app.benchmark import stage as benchmark_stage
@@ -459,6 +459,11 @@ async def review(body: ReviewRequest):
                 logger.error("Could not annotate the clip (%s)", type(exc).__name__)
                 answer["annotated_video_uri"] = None
                 answer["excerpt_video_uri"] = None
+            try:
+                answer["thumbnail_uri"] = await asyncio.to_thread(thumbnails.render, answer)
+            except Exception as exc:
+                logger.error("Could not create evidence thumbnail (%s)", type(exc).__name__)
+                answer["thumbnail_uri"] = None
             # Stored after the verdict exists, so a storage fault cannot cost the
             # caller a review they have already waited minutes for.
             answer["estimated_ai_cost_usd"] = costs.estimate()
@@ -560,6 +565,23 @@ async def impact(period: str = "all"):
     except Exception as exc:
         logger.error("Could not aggregate impact (%s)", type(exc).__name__)
         raise HTTPException(503, "Review history is unavailable") from exc
+
+
+class DismissalPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dismissed: bool = Field(strict=True)
+
+
+@app.patch("/v1/reviews/{review_id}/dismissal")
+async def set_dismissal(review_id: str, body: DismissalPatch):
+    try:
+        updated = await history.set_dismissed(review_id, body.dismissed)
+    except Exception as exc:
+        logger.error("Could not update dismissal (%s)", type(exc).__name__)
+        raise HTTPException(503, "Review history is unavailable") from exc
+    if not updated:
+        raise HTTPException(404, "No such review")
+    return {"review_id": review_id, "dismissed": body.dismissed}
 
 
 class ReportingPatch(BaseModel):

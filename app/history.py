@@ -43,6 +43,7 @@ def summarise(review_id: str, result: dict, created_at: datetime, case: dict | N
     """The fields a list view shows, and nothing else."""
     reportable = result.get("reportable", []) or []
     case = case or {}
+    dismissed = case.get("dismissed", result.get("dismissed"))
     return {
         "case_id": case.get("id") or case_id(review_id),
         # The dashboard charts offences by code, so a list can drive the chart
@@ -50,11 +51,13 @@ def summarise(review_id: str, result: dict, created_at: datetime, case: dict | N
         "offence_codes": sorted({o.get("code", "") for o in case.get("offences") or []} - {""}),
         "plate": ((case.get("vehicle") or {}).get("plate")),
         "reporting_status": ((case.get("reporting") or {}).get("status")),
+        **({"dismissed": dismissed} if isinstance(dismissed, bool) else {}),
         "review_id": review_id,
         "created_at": created_at,
         "video_uri": result.get("video_uri", ""),
         "annotated_video_uri": result.get("annotated_video_uri"),
         "excerpt_video_uri": result.get("excerpt_video_uri"),
+        "thumbnail_uri": result.get("thumbnail_uri"),
         "reportable_count": result.get("reportable_count", 0),
         "verdict": result.get("verdict", "")[:500],
         # The provisions cited, so a list can be scanned without opening records.
@@ -220,6 +223,7 @@ def with_playback(record: dict) -> dict:
     original = playable(record.get("video_uri"))
     annotated = playable(record.get("annotated_video_uri"))
     excerpt = playable(record.get("excerpt_video_uri"))
+    thumbnail = playable(record.get("thumbnail_uri"))
 
     case = record.get("case")
     if isinstance(case, dict):
@@ -229,6 +233,7 @@ def with_playback(record: dict) -> dict:
                 **(case.get("evidence") or {}),
                 "originalVideoUrl": original,
                 "annotatedVideoUrl": annotated,
+                "thumbnailUrl": thumbnail,
             },
         }
     trail = record.get("decision_trail")
@@ -243,6 +248,7 @@ def with_playback(record: dict) -> dict:
         "annotated_video_url": annotated,
         # Just the cited seconds, boxes included: the clip a reviewer sends on.
         "excerpt_video_url": excerpt,
+        "thumbnail_url": thumbnail,
     }
 
 
@@ -266,6 +272,7 @@ def tally(summaries: list[dict], today: str) -> dict:
     matter: a plate seen in three cases is one snitch but three sightings, and
     an offence repeated within a case counts each time.
     """
+    summaries = [summary for summary in summaries if not summary.get("dismissed")]
     # Reports a person actually confirmed and sent; a case the model produced
     # but nobody sent is not a report. One plate reported twice is one driver,
     # and a report with no known plate still counts once.
@@ -304,6 +311,35 @@ async def impact(period: str = "all", now: datetime | None = None) -> dict:
         query = query.where("created_at", ">=", since)
     rows = [doc.to_dict() async for doc in query.stream()]
     return tally(rows, at.date().isoformat())
+
+
+async def set_dismissed(review_id: str, dismissed: bool) -> bool:
+    """Persist dismissal independently of reporting status, atomically in both views."""
+    db = client()
+    record_ref = db.collection(RECORDS).document(review_id)
+    record = await record_ref.get()
+    if not record.exists:
+        return False
+    stored = record.to_dict() or {}
+    fields = {"dismissed": dismissed}
+    if isinstance(stored.get("case"), dict):
+        fields["case.dismissed"] = dismissed
+    summary_ref = db.collection(SUMMARIES).document(review_id)
+    summary = await summary_ref.get()
+    batch = db.batch()
+    batch.update(record_ref, fields)
+    if summary.exists:
+        batch.set(summary_ref, {"dismissed": dismissed}, merge=True)
+    else:
+        batch.create(
+            summary_ref,
+            {
+                **summarise(review_id, stored, stored["created_at"], stored.get("case")),
+                "dismissed": dismissed,
+            },
+        )
+    await batch.commit()
+    return True
 
 
 async def set_reporting_status(review_id: str, status: str, plate: str | None = None) -> bool:

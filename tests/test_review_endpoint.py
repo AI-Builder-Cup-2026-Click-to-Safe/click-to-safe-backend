@@ -31,6 +31,9 @@ def cloud(monkeypatch):
     monkeypatch.setattr(main, "storage_client", lambda: storage)
     runner = AsyncMock(return_value=VERDICT)
     monkeypatch.setattr(main, "run_review", runner)
+    monkeypatch.setattr(
+        main.thumbnails, "render", Mock(return_value="gs://test-videos/thumbnails/a.jpg")
+    )
     return blob, runner
 
 
@@ -39,6 +42,7 @@ def test_review_returns_the_judges_decision(client, cloud):
     data = client.post("/v1/review", json={"video_uri": "gs://test-videos/uploads/a"}).json()
     assert data["reportable_count"] == 1
     assert data["rounds_used"] == 2
+    assert data["thumbnail_uri"] == "gs://test-videos/thumbnails/a.jpg"
     runner.assert_awaited_once()
 
 

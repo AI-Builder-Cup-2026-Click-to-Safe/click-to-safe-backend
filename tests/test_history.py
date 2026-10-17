@@ -1,4 +1,6 @@
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,8 +22,10 @@ RESULT = {
 
 
 class FakeDoc:
-    def __init__(self, data):
+    def __init__(self, data, reference=None, document_id=None):
         self._data = data
+        self.reference = reference
+        self.id = document_id
 
     @property
     def exists(self):
@@ -40,6 +44,14 @@ class FakeRef:
 
     async def get(self):
         return FakeDoc(self.store.get(self.key))
+
+    async def update(self, data):
+        for path, value in data.items():
+            target = self.store[self.key]
+            parts = path.split(".")
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            target[parts[-1]] = value
 
     async def delete(self):
         self.store.pop(self.key, None)
@@ -83,6 +95,10 @@ class FakeCollection:
     def order_by(self, field, direction=None):
         return FakeQuery(list(self.store.values())).order_by(field, direction)
 
+    async def stream(self):
+        for key, value in self.store.items():
+            yield FakeDoc(value, self.document(key), key)
+
 
 class FakeDb:
     def __init__(self):
@@ -90,6 +106,27 @@ class FakeDb:
 
     def collection(self, name):
         return FakeCollection(self.collections.setdefault(name, {}))
+
+    def batch(self):
+        class Batch:
+            def __init__(self):
+                self.operations = []
+
+            def update(self, ref, data):
+                self.operations.append(lambda: ref.update(data))
+
+            def set(self, ref, data, merge=False):
+                self.operations.append(lambda: ref.set(data, merge=merge))
+
+            def create(self, ref, data):
+                assert ref.key not in ref.store
+                self.operations.append(lambda: ref.set(data))
+
+            async def commit(self):
+                for operation in self.operations:
+                    await operation()
+
+        return Batch()
 
 
 @pytest.fixture
@@ -113,6 +150,9 @@ def test_a_summary_carries_only_what_a_list_shows():
     assert summary["duration_seconds"] == 255.5
     # The evidence is what makes a record large; it must not reach the summary.
     assert "evidence" not in summary
+    # An absent legacy flag must remain distinguishable from an explicit restore.
+    assert "dismissed" not in summary
+    assert history.summarise("abc", {**RESULT, "dismissed": False}, at)["dismissed"] is False
 
 
 def test_a_summary_includes_the_server_cost_when_available():
@@ -217,6 +257,7 @@ def test_playback_urls_reach_the_case_the_dashboard_reads(monkeypatch):
         "video_uri": "gs://b/uploads/a",
         "annotated_video_uri": "gs://b/annotated/a",
         "excerpt_video_uri": "gs://b/excerpt/a",
+        "thumbnail_uri": "gs://b/thumbnails/a.jpg",
         "case": {"id": "RR-1", "evidence": {"annotatedVideoUrl": None, "tracks": []}},
         "decision_trail": {"caseId": "RR-1", "excerptVideoUrl": None},
     }
@@ -224,6 +265,9 @@ def test_playback_urls_reach_the_case_the_dashboard_reads(monkeypatch):
     assert out["case"]["evidence"]["annotatedVideoUrl"] == "https://signed/gs://b/annotated/a"
     assert out["case"]["evidence"]["originalVideoUrl"] == "https://signed/gs://b/uploads/a"
     assert out["decision_trail"]["excerptVideoUrl"] == "https://signed/gs://b/excerpt/a"
+    assert out["case"]["evidence"]["thumbnailUrl"] == "https://signed/gs://b/thumbnails/a.jpg"
+    assert out["thumbnail_url"] == "https://signed/gs://b/thumbnails/a.jpg"
+    assert "thumbnailUrl" not in record["case"]["evidence"]
     # What the case already carried is left alone.
     assert out["case"]["evidence"]["tracks"] == []
 
@@ -328,3 +372,68 @@ async def test_a_typed_plate_fills_one_the_footage_did_not_give(db):
     assert summaries["r1"] == {"plate": "WXY 2048", "reporting_status": "sent"}
     # What the footage showed is never replaced by what was typed.
     assert summaries["r2"]["plate"] == "WC 7178 W"
+
+
+@pytest.mark.anyio
+async def test_dismissal_preserves_reporting_verdict_and_evidence_and_is_reversible(db):
+    review_id = await history.save({**RESULT, "thumbnail_uri": "gs://b/thumbnails/a.jpg"})
+    await history.set_reporting_status(review_id, "sent")
+    assert await history.set_dismissed(review_id, True)
+    record = await history.get(review_id)
+    assert record["dismissed"] is True
+    assert record["case"]["dismissed"] is True
+    assert record["case"]["reporting"]["status"] == "sent"
+    assert record["verdict"] == RESULT["verdict"]
+    assert record["thumbnail_uri"] == "gs://b/thumbnails/a.jpg"
+    assert db.collections[history.SUMMARIES][review_id]["dismissed"] is True
+    assert await history.set_dismissed(review_id, False)
+    assert (await history.get(review_id))["case"]["dismissed"] is False
+    assert not await history.set_dismissed("missing", True)
+
+
+def test_dismissal_api_validates_boolean_and_reports_unknown_ids(client, db):
+    assert (
+        client.patch("/v1/reviews/missing/dismissal", json={"dismissed": True}).status_code == 404
+    )
+    for invalid in [{}, {"dismissed": "true"}, {"dismissed": True, "status": "sent"}]:
+        assert client.patch("/v1/reviews/missing/dismissal", json=invalid).status_code == 422
+
+
+@pytest.mark.anyio
+async def test_dismissal_of_legacy_review_does_not_create_an_incomplete_case(db):
+    db.collections[history.RECORDS] = {"old": {**RESULT, "created_at": datetime.now(timezone.utc)}}
+    assert await history.set_dismissed("old", True)
+    record = await history.get("old")
+    assert record["dismissed"] is True and "case" not in record
+    assert db.collections[history.SUMMARIES]["old"]["created_at"] == record["created_at"]
+
+
+def test_dismissed_cases_do_not_contribute_to_any_impact_counter():
+    dismissed = {**summary("HIDDEN 1", "sent", ["speed"]), "dismissed": True}
+    visible = summary("VISIBLE 1", "sent", ["lane"])
+    assert history.tally([dismissed, visible], "2026-10-18") == history.tally(
+        [visible], "2026-10-18"
+    )
+
+
+@pytest.mark.anyio
+async def test_thumbnail_backfill_preserves_all_other_fields_and_can_be_repeated(db, monkeypatch):
+    from app import thumbnail_backfill
+
+    review_id = await history.save(RESULT)
+    await history.set_reporting_status(review_id, "sent")
+    await history.set_dismissed(review_id, True)
+    before = deepcopy(db.collections)
+    render = Mock(return_value="gs://test-videos/thumbnails/preview.jpg")
+    monkeypatch.setattr(thumbnail_backfill.thumbnails, "render", render)
+    assert (await thumbnail_backfill.backfill())["pending"] == 1
+    render.assert_not_called()
+    assert db.collections == before
+    assert (await thumbnail_backfill.backfill(apply=True))["updated"] == 1
+    after = deepcopy(db.collections)
+    for collection in [history.RECORDS, history.SUMMARIES]:
+        assert after[collection][review_id].pop("thumbnail_uri") == render.return_value
+        before[collection][review_id].pop("thumbnail_uri", None)
+    assert after == before
+    result = await thumbnail_backfill.backfill(apply=True)
+    assert result["updated"] == 0 and result["existing"] == 1 and result["failed"] == []
