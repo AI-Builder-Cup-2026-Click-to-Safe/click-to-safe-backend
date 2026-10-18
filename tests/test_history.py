@@ -298,13 +298,13 @@ def test_only_cases_a_person_sent_are_counted_as_reports():
     assert out["snitchedCount"] == 1
 
 
-def test_one_plate_reported_twice_is_one_report():
+def test_separate_sent_cases_with_the_same_plate_each_count_as_a_report():
     out = history.tally([summary("AAA 1", "sent"), summary("AAA 1", "sent")], "2026-10-08")
-    assert out["snitchedCount"] == 1
+    assert out["snitchedCount"] == 2
 
 
 def test_sightings_count_every_case_not_distinct_plates():
-    # The same plate in three cases is one snitch but three sightings.
+    # The same plate in three cases is three sightings.
     out = history.tally([summary("AAA 1") for _ in range(3)], "2026-10-08")
     assert out["mostSpotted"] == {"plate": "AAA 1", "count": 3}
 
@@ -360,6 +360,21 @@ def test_reports_without_a_plate_each_count_once():
         [summary(None, "sent"), summary(None, "sent"), summary("AAA 1", "sent")], "2026-10-08"
     )
     assert out["snitchedCount"] == 3
+
+
+def test_report_total_matches_non_dismissed_sent_cases_from_stored_history(client, db):
+    db.collections[history.SUMMARIES] = {
+        "same-plate-first": summary("AAA 1", "sent"),
+        "same-plate-second": {**summary("AAA 1", "sent"), "dismissed": False},
+        "unknown-plate": summary(None, "sent"),
+        "dismissed-sent": {**summary("AAA 1", "sent"), "dismissed": True},
+        "ready": summary("BBB 2", "ready"),
+        "opened": summary("CCC 3", "opened"),
+        "legacy": summary("DDD 4", None),
+    }
+    response = client.get("/v1/impact")
+    assert response.status_code == 200
+    assert response.json()["snitchedCount"] == 3
 
 
 @pytest.mark.anyio

@@ -266,19 +266,12 @@ def period_start(period: str, now: datetime | None = None) -> datetime | None:
 
 
 def tally(summaries: list[dict], today: str) -> dict:
-    """The dashboard's counters, from the summaries alone.
-
-    The design is specific about what each one counts, and the differences
-    matter: a plate seen in three cases is one snitch but three sightings, and
-    an offence repeated within a case counts each time.
-    """
+    """The dashboard's counters, from the summaries alone."""
     summaries = [summary for summary in summaries if not summary.get("dismissed")]
     # Reports a person actually confirmed and sent; a case the model produced
-    # but nobody sent is not a report. One plate reported twice is one driver,
-    # and a report with no known plate still counts once.
+    # but nobody sent is not a report. Separate sent cases count separately,
+    # even when they share a plate, matching the Sent list.
     sent = [s for s in summaries if s.get("reporting_status") == "sent"]
-    sent_plates = {s["plate"] for s in sent if s.get("plate")}
-    unplated = sum(1 for s in sent if not s.get("plate"))
 
     sightings: dict[str, int] = {}
     occurrences: dict[str, int] = {}
@@ -291,7 +284,7 @@ def tally(summaries: list[dict], today: str) -> dict:
 
     most = max(sightings.items(), key=lambda kv: kv[1], default=None)
     return {
-        "snitchedCount": len(sent_plates) + unplated,
+        "snitchedCount": len(sent),
         # An issued fine is confirmed by an authority, and nothing here is wired
         # to one, so claiming any number would be inventing enforcement.
         "billedCount": 0,
