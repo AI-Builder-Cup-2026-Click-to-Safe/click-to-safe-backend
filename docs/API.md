@@ -377,7 +377,7 @@ curl "$PUBLIC_API_URL/v1/impact?period=week" -H "Authorization: Bearer $PUBLIC_A
 
 | Counter | Counts |
 | --- | --- |
-| `snitchedCount` | Distinct plates in cases a person confirmed and sent. |
+| `snitchedCount` | Non-dismissed cases a person confirmed and sent. Separate cases with the same plate each count once. |
 | `billedCount` | Fines an authority issued. Always `0`: nothing is wired to one. |
 | `mostSpotted` | The plate seen in the most cases, however many were sent. |
 | `offenceOccurrences` | Every occurrence, so an offence twice in one case counts twice. |
