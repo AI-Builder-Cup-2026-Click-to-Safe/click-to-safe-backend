@@ -96,12 +96,16 @@ resource "google_cloud_run_v2_service" "public_api" {
   ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = false
 
+  # Keep one instance warm across traffic-serving revisions after idle periods.
+  scaling {
+    min_instance_count = 1
+  }
+
   template {
     service_account = var.runtime_service_account
     # A review runs three agents over up to three rounds, well past the 5m default.
     timeout = "3600s"
     scaling {
-      min_instance_count = 0
       max_instance_count = 4
     }
     containers {
@@ -114,7 +118,8 @@ resource "google_cloud_run_v2_service" "public_api" {
         }
         # Release the CPU between requests: a review is spent waiting on Gemini,
         # not computing, so paying for an always-on CPU buys nothing here.
-        cpu_idle = true
+        cpu_idle          = true
+        startup_cpu_boost = true
       }
       env {
         name  = "PUBLIC_API"

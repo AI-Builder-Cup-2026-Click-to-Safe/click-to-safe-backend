@@ -14,10 +14,11 @@ import logging
 import os
 import threading
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
-from google.cloud.firestore import AsyncClient, Query
+from google.cloud.firestore import AsyncClient, Query, async_transactional
 
 from app.cases import DEFAULT_REGION, build_case, decision_trail
 
@@ -130,6 +131,143 @@ async def get(review_id: str) -> dict | None:
     """One full review, or None when no such review was stored."""
     doc = await client().collection(RECORDS).document(review_id).get()
     return doc.to_dict() if doc.exists else None
+
+
+class ReplacementNotFound(Exception):
+    """The requested review no longer exists."""
+
+
+class ReplacementConflict(Exception):
+    """Regeneration would overwrite a protected or changed review."""
+
+
+@dataclass(frozen=True)
+class ReplacementTarget:
+    review_id: str
+    record_updated_at: datetime
+    summary_updated_at: datetime
+    video_uri: str
+
+
+def _check_replacement(record: dict, summary: dict) -> None:
+    case = record.get("case") or {}
+    if any(
+        value is True
+        for value in (record.get("dismissed"), case.get("dismissed"), summary.get("dismissed"))
+    ):
+        raise ReplacementConflict("Dismissed reviews cannot be regenerated")
+    if "sent" in ((case.get("reporting") or {}).get("status"), summary.get("reporting_status")):
+        raise ReplacementConflict("Sent reviews cannot be regenerated")
+    if not isinstance(record.get("created_at"), datetime):
+        raise ReplacementConflict("Review identity is incomplete")
+
+
+async def replacement_target(review_id: str, video_uri: str) -> ReplacementTarget:
+    """Validate before model calls, retaining both versions for the eventual commit."""
+    db = client()
+    record = await db.collection(RECORDS).document(review_id).get()
+    if not record.exists:
+        raise ReplacementNotFound("No such review")
+    summary = await db.collection(SUMMARIES).document(review_id).get()
+    if not summary.exists:
+        raise ReplacementConflict("Review summary is missing")
+    stored = record.to_dict()
+    _check_replacement(stored, summary.to_dict())
+    if stored.get("video_uri") == video_uri:
+        # Render names depend on the source path. A new upload protects the old
+        # evidence objects until the replacement has committed successfully.
+        raise ReplacementConflict("Regeneration requires a fresh upload")
+    return ReplacementTarget(
+        review_id, record.update_time, summary.update_time, stored.get("video_uri", "")
+    )
+
+
+def _replacement_case(review_id: str, stored: dict, summary: dict, result: dict) -> dict:
+    old = stored.get("case") or {}
+    # Older reviews have no server Case. Retain the first case identity produced
+    # by the mobile legacy mapper rather than changing the visible reference.
+    stable_id = old.get("id") or f"cloud:{review_id}-1"
+    case = build_case(result, stable_id, old.get("region", DEFAULT_REGION), stored["created_at"])
+    case["version"] = int(old.get("version") or 1) + 1
+    # A fresh clean verdict must not remain in the pending queue just because a
+    # draft was previously opened. Otherwise retain the user's reporting state.
+    if case["offences"] and old.get("reporting"):
+        case["reporting"] = old["reporting"]
+    elif not case["offences"]:
+        case["reporting"]["status"] = "clean"
+    for field in ("dismissed", "authorityOutcome", "edited"):
+        if field in old:
+            case[field] = old[field]
+    edited_paths = {
+        "plate": ("vehicle", "plate"),
+        "vehicle": ("vehicle", "type"),
+        "model": ("vehicle", "model"),
+        "date": ("incident", "date"),
+        "time": ("incident", "time"),
+        "location": ("incident", "location"),
+        "description": ("incident", "description"),
+    }
+    for edited in old.get("edited") or []:
+        if edited in edited_paths:
+            group, field = edited_paths[edited]
+            if field in (old.get(group) or {}):
+                case[group][field] = old[group][field]
+    # The converter never supplies a model; a stored one was entered by a person.
+    if (old.get("vehicle") or {}).get("model") is not None:
+        case["vehicle"]["model"] = old["vehicle"]["model"]
+    # The reporting endpoint historically stored a reporter-entered plate only
+    # in the summary. Preserve it in both views on regeneration.
+    if not (old.get("vehicle") or {}).get("plate") and summary.get("plate"):
+        case["vehicle"]["plate"] = summary["plate"]
+    if old.get("edited") and (old.get("provenance") or {}).get("factsSource"):
+        case["provenance"]["factsSource"] = old["provenance"]["factsSource"]
+    return case
+
+
+async def replace(target: ReplacementTarget, result: dict) -> dict:
+    """Atomically replace the same record and summary, or leave both untouched."""
+    db = client()
+    record_ref = db.collection(RECORDS).document(target.review_id)
+    summary_ref = db.collection(SUMMARIES).document(target.review_id)
+
+    @async_transactional
+    async def commit(transaction):
+        record = await record_ref.get(transaction=transaction)
+        summary = await summary_ref.get(transaction=transaction)
+        if not record.exists or not summary.exists:
+            raise ReplacementConflict("Review was removed during regeneration")
+        stored, old_summary = record.to_dict(), summary.to_dict()
+        _check_replacement(stored, old_summary)
+        if (
+            record.update_time != target.record_updated_at
+            or summary.update_time != target.summary_updated_at
+        ):
+            raise ReplacementConflict("Review changed during regeneration")
+        if result.get("video_uri") in (None, "", target.video_uri):
+            raise ReplacementConflict("Regeneration requires a fresh upload")
+        case = _replacement_case(target.review_id, stored, old_summary, result)
+        replacement = {
+            **stored,
+            **result,
+            "review_id": target.review_id,
+            "created_at": stored["created_at"],
+            "regenerated_at": datetime.now(timezone.utc),
+            "case": case,
+            "decision_trail": decision_trail(result, case["id"]),
+        }
+        # Dismissal belongs to the user, never to the model result.
+        if "dismissed" in stored:
+            replacement["dismissed"] = stored["dismissed"]
+        else:
+            replacement.pop("dismissed", None)
+        transaction.set(record_ref, replacement)
+        new_summary = summarise(target.review_id, replacement, stored["created_at"], case)
+        if "dismissed" in old_summary:
+            new_summary["dismissed"] = old_summary["dismissed"]
+        transaction.set(summary_ref, new_summary)
+        return replacement
+
+    return await commit(db.transaction())
 
 
 async def delete(review_id: str) -> bool:
@@ -348,17 +486,17 @@ async def set_reporting_status(review_id: str, status: str, plate: str | None = 
         return False
     stored = record.to_dict() or {}
     case = stored.get("case")
+    batch = db.batch()
     if isinstance(case, dict):
-        case = {
-            **case,
-            "reporting": {
-                **(case.get("reporting") or {}),
-                "status": status,
-                # Only a person reaches this endpoint, so sending is confirmed.
-                "confirmedByUser": status == "sent",
+        # Updating just these fields cannot overwrite newly regenerated evidence
+        # if a review finishes between this request's read and write.
+        batch.update(
+            db.collection(RECORDS).document(review_id),
+            {
+                "case.reporting.status": status,
+                "case.reporting.confirmedByUser": status == "sent",
             },
-        }
-        await db.collection(RECORDS).document(review_id).set({**stored, "case": case})
+        )
     update = {"reporting_status": status}
     # A plate typed by the reporter fills one the model could not read; it never
     # replaces one the footage already gave.
@@ -366,5 +504,6 @@ async def set_reporting_status(review_id: str, status: str, plate: str | None = 
     summary = await db.collection(SUMMARIES).document(review_id).get()
     if typed and not (summary.to_dict() or {}).get("plate"):
         update["plate"] = typed
-    await db.collection(SUMMARIES).document(review_id).set(update, merge=True)
+    batch.set(db.collection(SUMMARIES).document(review_id), update, merge=True)
+    await batch.commit()
     return True

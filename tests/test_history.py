@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
+from google.api_core.exceptions import Aborted
 
 from app import history, main
 
@@ -22,28 +23,36 @@ RESULT = {
 
 
 class FakeDoc:
-    def __init__(self, data, reference=None, document_id=None):
-        self._data = data
+    def __init__(self, data, reference=None, document_id=None, update_time=None):
+        self._data = deepcopy(data)
         self.reference = reference
         self.id = document_id
+        self.update_time = update_time
 
     @property
     def exists(self):
         return self._data is not None
 
     def to_dict(self):
-        return self._data
+        return deepcopy(self._data)
 
 
 class FakeRef:
-    def __init__(self, store, key):
+    def __init__(self, store, key, versions):
         self.store, self.key = store, key
+        self.versions = versions
 
     async def set(self, data, merge=False):
-        self.store[self.key] = {**(self.store.get(self.key) or {}), **data} if merge else data
+        self.store[self.key] = deepcopy(
+            {**(self.store.get(self.key) or {}), **data} if merge else data
+        )
+        self.versions[self.key] = self.versions.get(self.key, 0) + 1
 
-    async def get(self):
-        return FakeDoc(self.store.get(self.key))
+    async def get(self, transaction=None):
+        version = self.versions.get(self.key, 0)
+        if transaction is not None:
+            transaction.reads.append((self, version))
+        return FakeDoc(self.store.get(self.key), update_time=version)
 
     async def update(self, data):
         for path, value in data.items():
@@ -52,9 +61,11 @@ class FakeRef:
             for part in parts[:-1]:
                 target = target.setdefault(part, {})
             target[parts[-1]] = value
+        self.versions[self.key] = self.versions.get(self.key, 0) + 1
 
     async def delete(self):
         self.store.pop(self.key, None)
+        self.versions[self.key] = self.versions.get(self.key, 0) + 1
 
 
 class FakeQuery:
@@ -86,11 +97,12 @@ class FakeQuery:
 
 
 class FakeCollection:
-    def __init__(self, store):
+    def __init__(self, store, versions):
         self.store = store
+        self.versions = versions
 
     def document(self, key):
-        return FakeRef(self.store, key)
+        return FakeRef(self.store, key, self.versions)
 
     def order_by(self, field, direction=None):
         return FakeQuery(list(self.store.values())).order_by(field, direction)
@@ -103,9 +115,51 @@ class FakeCollection:
 class FakeDb:
     def __init__(self):
         self.collections = {}
+        self.versions = {}
+        self.before_commit = None
+        self.fail_commit = False
+        self.transaction_commits = 0
 
     def collection(self, name):
-        return FakeCollection(self.collections.setdefault(name, {}))
+        return FakeCollection(
+            self.collections.setdefault(name, {}), self.versions.setdefault(name, {})
+        )
+
+    def transaction(self):
+        db = self
+
+        class Transaction:
+            # Exercise the actual SDK's async_transactional retry wrapper.
+            _read_only = False
+            _max_attempts = 3
+            _id = b"test-transaction"
+
+            def _clean_up(self):
+                self.reads, self.writes = [], []
+
+            async def _begin(self, retry_id=None):
+                pass
+
+            def set(self, ref, data):
+                self.writes.append((ref, deepcopy(data)))
+
+            async def _commit(self):
+                if db.before_commit is not None:
+                    callback, db.before_commit = db.before_commit, None
+                    await callback()
+                if db.fail_commit:
+                    raise RuntimeError("Firestore commit failed")
+                if any(ref.versions.get(ref.key, 0) != version for ref, version in self.reads):
+                    raise Aborted("concurrent write")
+                assert len(self.writes) == 2
+                for ref, data in self.writes:
+                    await ref.set(data)
+                db.transaction_commits += 1
+
+            async def _rollback(self):
+                self._clean_up()
+
+        return Transaction()
 
     def batch(self):
         class Batch:
@@ -189,6 +243,188 @@ async def test_a_storage_failure_does_not_lose_the_caller_their_review(monkeypat
     monkeypatch.setattr(history, "client", lambda: Broken())
     # The review already cost minutes of model time; it must still be returned.
     assert await history.save(RESULT)
+
+
+@pytest.mark.anyio
+async def test_regeneration_replaces_both_views_without_creating_documents_and_keeps_user_facts(db):
+    review_id = await history.save(RESULT)
+    await history.set_dismissed(review_id, False)
+    await history.set_reporting_status(review_id, "opened", "USER 1")
+    ref = db.collection(history.RECORDS).document(review_id)
+    await ref.update(
+        {
+            "case.vehicle.model": "Civic",
+            "case.incident.location": "User location",
+            "case.edited": ["location"],
+            "case.provenance.factsSource": "video_analysis_and_user",
+        }
+    )
+    old = await history.get(review_id)
+    old_ids = {name: set(rows) for name, rows in db.collections.items()}
+    target = await history.replacement_target(review_id, "gs://test-videos/uploads/new")
+    result = {
+        **RESULT,
+        "video_uri": "gs://test-videos/uploads/new",
+        "verdict": "New finding",
+        "tracks": [{"vehicleTrackId": "v1", "frames": [{"atSeconds": 1}]}],
+        "thumbnail_uri": "gs://test-videos/thumbnails/new.jpg",
+    }
+    returned = await history.replace(target, result)
+    assert returned == await history.get(review_id)
+    assert {name: set(rows) for name, rows in db.collections.items()} == old_ids
+    assert db.transaction_commits == 1
+    assert returned["review_id"] == review_id
+    assert returned["created_at"] == old["created_at"]
+    assert returned["case"]["id"] == old["case"]["id"]
+    assert returned["case"]["version"] == old["case"]["version"] + 1
+    assert returned["case"]["vehicle"]["model"] == "Civic"
+    assert returned["case"]["vehicle"]["plate"] == "USER 1"
+    assert returned["case"]["incident"]["location"] == "User location"
+    assert returned["case"]["incident"]["description"] == "New finding"
+    assert returned["case"]["reporting"] == old["case"]["reporting"]
+    assert returned["case"]["dismissed"] is False
+    assert returned["case"]["evidence"]["tracks"] == result["tracks"]
+    assert returned["decision_trail"]["verdict"] == "New finding"
+    assert returned["regenerated_at"] > old["created_at"]
+    summary = db.collections[history.SUMMARIES][review_id]
+    assert summary["video_uri"] == result["video_uri"]
+    assert summary["thumbnail_uri"] == result["thumbnail_uri"]
+    assert summary["plate"] == "USER 1"
+    assert summary["dismissed"] is False
+
+
+@pytest.mark.anyio
+async def test_legacy_regeneration_keeps_the_case_id_that_the_mobile_mapper_already_shows(db):
+    at = datetime.now(timezone.utc)
+    review_id = "a" * 32
+    db.collections[history.RECORDS] = {
+        review_id: {**RESULT, "created_at": at, "review_id": review_id}
+    }
+    db.collections[history.SUMMARIES] = {
+        review_id: {"review_id": review_id, "created_at": at, "dismissed": False}
+    }
+    target = await history.replacement_target(review_id, "gs://test-videos/uploads/new")
+    out = await history.replace(target, {**RESULT, "video_uri": "gs://test-videos/uploads/new"})
+    assert out["case"]["id"] == f"cloud:{review_id}-1"
+    assert out["decision_trail"]["caseId"] == out["case"]["id"]
+    assert out["created_at"] == at
+    assert out["case"]["reporting"]["status"] == "ready"
+    assert db.collections[history.SUMMARIES][review_id]["dismissed"] is False
+    assert len(db.collections[history.RECORDS]) == len(db.collections[history.SUMMARIES]) == 1
+
+
+@pytest.mark.anyio
+async def test_a_fresh_clean_verdict_clears_an_old_opened_draft_without_adding_a_record(db):
+    review_id = await history.save(RESULT)
+    await history.set_reporting_status(review_id, "opened")
+    target = await history.replacement_target(review_id, "gs://test-videos/uploads/new")
+    out = await history.replace(
+        target,
+        {
+            **RESULT,
+            "video_uri": "gs://test-videos/uploads/new",
+            "reportable_count": 0,
+            "reportable": [],
+        },
+    )
+    assert out["case"]["reporting"]["status"] == "clean"
+    assert out["case"]["offences"] == []
+    assert db.collections[history.SUMMARIES][review_id]["reporting_status"] == "clean"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "collection,field,value",
+    [
+        (history.RECORDS, "dismissed", True),
+        (history.RECORDS, "case.dismissed", True),
+        (history.SUMMARIES, "dismissed", True),
+        (history.RECORDS, "case.reporting.status", "sent"),
+        (history.SUMMARIES, "reporting_status", "sent"),
+    ],
+)
+async def test_regeneration_rejects_dismissed_or_sent_in_either_view(db, collection, field, value):
+    review_id = await history.save(RESULT)
+    await db.collection(collection).document(review_id).update({field: value})
+    with pytest.raises(history.ReplacementConflict):
+        await history.replacement_target(review_id, "gs://test-videos/uploads/new")
+    assert db.transaction_commits == 0
+
+
+@pytest.mark.anyio
+async def test_regeneration_refuses_the_same_upload_before_any_evidence_can_be_overwritten(db):
+    review_id = await history.save(RESULT)
+    with pytest.raises(history.ReplacementConflict, match="fresh upload"):
+        await history.replacement_target(review_id, RESULT["video_uri"])
+    with pytest.raises(history.ReplacementNotFound):
+        await history.replacement_target("missing", "gs://test-videos/uploads/new")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("change", ["sent", "dismissed", "record_edit", "summary_edit", "delete"])
+async def test_a_change_during_analysis_is_preserved_and_replacement_is_refused(db, change):
+    review_id = await history.save(RESULT)
+    target = await history.replacement_target(review_id, "gs://test-videos/uploads/new")
+    if change == "sent":
+        await history.set_reporting_status(review_id, "sent")
+    elif change == "dismissed":
+        await history.set_dismissed(review_id, True)
+    elif change == "delete":
+        await history.delete(review_id)
+    elif change == "record_edit":
+        await (
+            db.collection(history.RECORDS).document(review_id).update({"case.vehicle.model": "New"})
+        )
+    else:
+        await db.collection(history.SUMMARIES).document(review_id).update({"plate": "USER 1"})
+    changed = deepcopy(db.collections)
+    with pytest.raises(history.ReplacementConflict):
+        await history.replace(target, {**RESULT, "video_uri": "gs://test-videos/uploads/new"})
+    assert db.collections == changed
+    assert db.transaction_commits == 0
+
+
+@pytest.mark.anyio
+async def test_sdk_transaction_retry_does_not_overwrite_a_report_sent_during_commit(db):
+    review_id = await history.save(RESULT)
+    target = await history.replacement_target(review_id, "gs://test-videos/uploads/new")
+
+    async def send_before_commit():
+        await history.set_reporting_status(review_id, "sent")
+
+    db.before_commit = send_before_commit
+    with pytest.raises(history.ReplacementConflict, match="Sent"):
+        await history.replace(target, {**RESULT, "video_uri": "gs://test-videos/uploads/new"})
+    stored = await history.get(review_id)
+    assert stored["video_uri"] == RESULT["video_uri"]
+    assert stored["case"]["reporting"]["status"] == "sent"
+    assert db.collections[history.SUMMARIES][review_id]["reporting_status"] == "sent"
+    assert db.transaction_commits == 0
+
+
+@pytest.mark.anyio
+async def test_two_simultaneous_regenerations_cannot_overwrite_each_other(db):
+    review_id = await history.save(RESULT)
+    first = await history.replacement_target(review_id, "gs://test-videos/uploads/first")
+    second = await history.replacement_target(review_id, "gs://test-videos/uploads/second")
+    await history.replace(first, {**RESULT, "video_uri": "gs://test-videos/uploads/first"})
+    committed = deepcopy(db.collections)
+    with pytest.raises(history.ReplacementConflict, match="changed"):
+        await history.replace(second, {**RESULT, "video_uri": "gs://test-videos/uploads/second"})
+    assert db.collections == committed
+    assert db.transaction_commits == 1
+
+
+@pytest.mark.anyio
+async def test_failed_replacement_commit_raises_and_preserves_both_old_views(db):
+    review_id = await history.save(RESULT)
+    target = await history.replacement_target(review_id, "gs://test-videos/uploads/new")
+    before = deepcopy(db.collections)
+    db.fail_commit = True
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await history.replace(target, {**RESULT, "video_uri": "gs://test-videos/uploads/new"})
+    assert db.collections == before
+    assert db.transaction_commits == 0
 
 
 @pytest.mark.anyio

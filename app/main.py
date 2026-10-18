@@ -8,6 +8,7 @@ the internet, so PUBLIC_API=true installs shared-token authentication instead.
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -168,6 +169,8 @@ class ReviewRequest(BaseModel):
     # Which jurisdiction's dashboard this case belongs to, as the front end's
     # contract defines it. It decides the incident's time zone.
     region: Literal["MY", "SG", "JP"] = DEFAULT_REGION
+    # Regenerate this review in place after re-uploading its original footage.
+    replace_review_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class Invocation(BaseModel):
@@ -392,18 +395,65 @@ async def prepared_analysis(
     }
 
 
+def check_replacement_evidence(answer: dict) -> None:
+    """Do not exchange working evidence for a partially generated replacement."""
+    coverage = answer.get("coverage") or {}
+    duration = coverage.get("duration_seconds")
+    total = coverage.get("windows_total", 0)
+    analysed = coverage.get("windows_analysed", 0)
+    if (
+        not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+        or duration <= 0
+        or not isinstance(total, int)
+        or total < 1
+        or analysed != total
+    ):
+        raise HTTPException(502, "Regenerated review did not cover the complete video")
+    reportable = answer.get("reportable") or []
+    if answer.get("reportable_count") != len(reportable):
+        raise HTTPException(502, "Regenerated review has inconsistent findings")
+    if not answer.get("thumbnail_uri"):
+        raise HTTPException(502, "Regenerated review is missing its thumbnail")
+    if reportable:
+        tracked = {
+            track.get("vehicleTrackId")
+            for track in answer.get("tracks") or []
+            if track.get("frames")
+        }
+        if any(
+            not item.get("vehicle_id") or item["vehicle_id"] not in tracked for item in reportable
+        ):
+            raise HTTPException(502, "Regenerated review is missing tracked evidence")
+        if not answer.get("annotated_video_uri") or not answer.get("excerpt_video_uri"):
+            raise HTTPException(502, "Regenerated review is missing rendered evidence")
+
+
 @app.post("/v1/review")
 async def review(body: ReviewRequest):
     """Run the analyst, lawyer and judge agents over an uploaded clip."""
     # Reject foreign URLs before obtaining credentials or calling any service.
     stage_started = time.monotonic()
     checked_object(body.video_uri)
+    target = None
+    if body.replace_review_id is not None:
+        try:
+            target = await history.replacement_target(body.replace_review_id, body.video_uri)
+        except history.ReplacementNotFound as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except history.ReplacementConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except Exception as exc:
+            logger.error("Could not validate replacement target (%s)", type(exc).__name__)
+            raise HTTPException(503, "Review history is unavailable") from exc
     await asyncio.to_thread(check_uploaded_video, body)
     # Measured first: a long clip is read window by window, which needs its own
     # time on top of the agent loop's, and anything past the limit is refused
     # rather than started and abandoned at the deadline.
     duration = await clip_duration(body)
     benchmark_stage("metadata_check", stage_started)
+    if target is not None and duration is None:
+        raise HTTPException(502, "Could not measure the original video for regeneration")
     # Gemini answers a clip of a few frames with a bare 400; say why instead.
     if duration is not None and duration < MIN_CLIP_SECONDS:
         raise HTTPException(422, f"Video must be at least {MIN_CLIP_SECONDS:g} second long")
@@ -431,6 +481,8 @@ async def review(body: ReviewRequest):
             postprocess_started = time.monotonic()
             # Say how the clip was read, so a partial window count is visible.
             answer = {**result, "coverage": coverage} if coverage else result
+            if target is not None:
+                answer = {**answer, "video_uri": body.video_uri}
             # Box each reported vehicle so a player can point at it. Only the
             # cited seconds are re-read, and a case without a track is still a
             # case, so nothing here may fail a verdict that already exists —
@@ -467,6 +519,18 @@ async def review(body: ReviewRequest):
             # Stored after the verdict exists, so a storage fault cannot cost the
             # caller a review they have already waited minutes for.
             answer["estimated_ai_cost_usd"] = costs.estimate()
+            if target is not None:
+                answer["video_uri"] = body.video_uri
+                check_replacement_evidence(answer)
+                try:
+                    answer = await history.replace(target, answer)
+                except history.ReplacementConflict as exc:
+                    raise HTTPException(409, str(exc)) from exc
+                except Exception as exc:
+                    logger.error("Could not replace the review (%s)", type(exc).__name__)
+                    raise HTTPException(503, "Could not save regenerated review") from exc
+                benchmark_stage("tracking_render_storage", postprocess_started)
+                return await asyncio.to_thread(history.with_playback, answer)
             answer["review_id"] = await history.save(answer, body.region)
             # The dashboard reads a Case; the rest of this answer is the working
             # it was built from, kept so nothing is lost by the conversion. A
@@ -484,6 +548,8 @@ async def review(body: ReviewRequest):
                 answer["decision_trail"] = None
             benchmark_stage("tracking_render_storage", postprocess_started)
             return answer
+    except HTTPException:
+        raise
     except TimeoutError as exc:
         raise HTTPException(504, "Agent review timed out") from exc
     except ValueError as exc:

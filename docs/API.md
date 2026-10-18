@@ -150,6 +150,47 @@ default window suits clips of a few minutes; a longer video needs a larger one.
 The response reports what was actually done under `coverage`, including
 `window_seconds`.
 
+#### Regenerate an existing review without adding another case
+
+Upload the original footage through steps 1 and 2 again, then pass the existing
+review ID as optional `replace_review_id` alongside the **new** upload URI:
+
+```json
+{
+  "video_uri": "gs://<bucket>/uploads/<fresh-upload-id>",
+  "mime_type": "video/mp4",
+  "replace_review_id": "c6ec7e580b504ebda1264812676519f3"
+}
+```
+
+The server validates the target before analysis and atomically replaces its
+record and summary after analysis. It retains `review_id`, case ID, `created_at`,
+dismissal, authority outcome, identifiable user-edited facts, and reporting state.
+A fresh clean verdict becomes `clean`, including when the old draft was opened.
+Legacy reviews without a stored case retain the mobile case ID
+`cloud:<review_id>-1`. The result includes a new `regenerated_at` timestamp and
+the exact stored case and decision trail, with freshly signed playback URLs.
+Requests without `replace_review_id` keep the existing create-review behavior.
+
+| Replacement failure | Response |
+| --- | --- |
+| Target review does not exist | `404` |
+| Target is dismissed or sent, its summary is missing, or the upload URI was reused | `409` |
+| Either record or summary changes during analysis, including another regeneration | `409`; concurrent changes are preserved |
+| Duration or full-video coverage is unknown/incomplete, thumbnail is missing, or a reportable vehicle lacks boxes/overlay/excerpt | `502`; the previous case and evidence stay in place |
+| Firestore validation or replacement fails | `503`; no fallback insert is attempted |
+
+Only fresh upload paths are accepted because overlay names derive from their
+source path. Thus failed regeneration cannot overwrite the old evidence objects.
+A clean result requires a thumbnail but has no tracked or annotated vehicle.
+Newly uploaded or rendered objects from an unsuccessful attempt may remain in
+storage; neither old evidence nor stored reviews are deleted by this operation.
+
+After a timeout or disconnected response, read `GET /v1/reviews/{id}` before
+retrying. A matching new `video_uri` and `regenerated_at` establish that the
+replacement committed. Do not treat an ambiguous network failure as proof that
+the database was unchanged, or start a second paid analysis automatically.
+
 This runs three agents over up to three rounds and takes minutes, so keep the
 connection open. The app gives up at 15 minutes and answers `504`; Cloud Run
 would hold the connection for an hour, so the app's limit is the one that
