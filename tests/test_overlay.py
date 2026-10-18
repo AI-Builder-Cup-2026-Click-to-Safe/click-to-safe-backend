@@ -27,7 +27,7 @@ def test_a_box_is_shown_until_just_before_the_next_sample():
     first, second = drawbox_filters([track([box(1.0), box(2.0)])], 100, 100)
     # Ending exactly on the next start would draw both boxes on that frame.
     assert f"between(t,1.00,{2.0 - BOUNDARY_GAP:.2f})" in first
-    assert f"between(t,2.00,{2.0 + HOLD_SECONDS:.2f})" in second
+    assert f"between(t,2.00,{2.0 + HOLD_SECONDS - BOUNDARY_GAP:.2f})" in second
 
 
 def test_consecutive_boxes_never_overlap():
@@ -42,7 +42,12 @@ def test_consecutive_boxes_never_overlap():
 
 def test_the_last_box_is_held_rather_than_blinking_out():
     [only] = drawbox_filters([track([box(5.0)])], 100, 100)
-    assert f"between(t,5.00,{5.0 + HOLD_SECONDS:.2f})" in only
+    assert f"between(t,5.00,{5.0 + HOLD_SECONDS - BOUNDARY_GAP:.2f})" in only
+
+
+def test_a_box_does_not_remain_over_an_absent_vehicle_until_the_next_detection():
+    first, _ = drawbox_filters([track([box(1.0), box(5.0)])], 100, 100, hold_seconds=0.5)
+    assert "between(t,1.00,1.49)" in first
 
 
 def test_two_vehicles_get_different_colours():

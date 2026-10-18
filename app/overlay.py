@@ -40,7 +40,9 @@ def available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def drawbox_filters(tracks: list[dict], width: int, height: int) -> list[str]:
+def drawbox_filters(
+    tracks: list[dict], width: int, height: int, hold_seconds: float = HOLD_SECONDS
+) -> list[str]:
     """One drawbox per sampled second, enabled only for that second.
 
     Coordinates are normalised 0-1 so they scale to the clip's real pixel size;
@@ -56,9 +58,9 @@ def drawbox_filters(tracks: list[dict], width: int, height: int) -> list[str]:
             # ends, so ending exactly on the next start draws both boxes on that
             # frame and the vehicle appears to have two outlines.
             end = (
-                frames[position + 1]["atSeconds"] - BOUNDARY_GAP
+                min(frames[position + 1]["atSeconds"], start + hold_seconds) - BOUNDARY_GAP
                 if position + 1 < len(frames)
-                else start + HOLD_SECONDS
+                else start + hold_seconds - BOUNDARY_GAP
             )
             x = round(frame["x"] * width)
             y = round(frame["y"] * height)
@@ -143,7 +145,10 @@ def shifted(tracks: list[dict], offset: float) -> list[dict]:
 
 
 async def render(
-    video_uri: str, tracks: list[dict], span: tuple[float, float] | None = None
+    video_uri: str,
+    tracks: list[dict],
+    span: tuple[float, float] | None = None,
+    hold_seconds: float = HOLD_SECONDS,
 ) -> str | None:
     """Render an annotated copy beside the original. Returns its gs:// URI.
 
@@ -179,7 +184,7 @@ async def render(
         size = await dimensions(source)
         if size is None:
             return None
-        filters = drawbox_filters(tracks, *size)
+        filters = drawbox_filters(tracks, *size, hold_seconds=hold_seconds)
         if not filters:
             return None
 
