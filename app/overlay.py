@@ -11,7 +11,9 @@ the sampling actually supports.
 """
 
 import asyncio
+import json
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -88,7 +90,7 @@ def cited_span(tracks: list[dict]) -> tuple[float, float] | None:
 
 
 async def dimensions(path: str) -> tuple[int, int] | None:
-    """The clip's pixel size, which the normalised boxes are scaled against."""
+    """Displayed size after ffmpeg's autorotation, matching the model's frame."""
     process = await asyncio.create_subprocess_exec(
         "ffprobe",
         "-v",
@@ -96,17 +98,26 @@ async def dimensions(path: str) -> tuple[int, int] | None:
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height",
+        "stream=width,height:stream_tags=rotate:stream_side_data=rotation",
         "-of",
-        "csv=p=0:s=x",
+        "json",
         path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
     out, _ = await process.communicate()
     try:
-        width, height = (int(v) for v in out.decode().strip().split("x")[:2])
-    except (ValueError, AttributeError):
+        stream = json.loads(out)["streams"][0]
+        width, height = int(stream["width"]), int(stream["height"])
+        rotation = next(
+            (item["rotation"] for item in stream.get("side_data_list", []) if "rotation" in item),
+            (stream.get("tags") or {}).get("rotate", 0),
+        )
+        # ffmpeg applies the display matrix before drawbox. Phone recordings
+        # commonly store landscape pixels with a quarter-turn display rotation.
+        if math.isclose(abs(float(rotation)) % 180, 90, abs_tol=0.01):
+            width, height = height, width
+    except (ValueError, TypeError, KeyError, IndexError):
         logger.error("Could not read the clip's dimensions")
         return None
     return (width, height) if width > 0 and height > 0 else None

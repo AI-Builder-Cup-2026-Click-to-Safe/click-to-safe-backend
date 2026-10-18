@@ -1,3 +1,11 @@
+import json
+import shutil
+import subprocess
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from app import overlay
 from app.overlay import BOUNDARY_GAP, HOLD_SECONDS, annotated_name, drawbox_filters
 
 
@@ -95,3 +103,164 @@ def test_an_excerpt_and_a_full_render_do_not_share_a_name():
     from app.overlay import annotated_name
 
     assert annotated_name("uploads/a", "excerpt") != annotated_name("uploads/a", "annotated")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "rotation,size",
+    [
+        (0, (1280, 720)),
+        (90, (720, 1280)),
+        (-90, (720, 1280)),
+        (270, (720, 1280)),
+        (180, (1280, 720)),
+    ],
+)
+async def test_box_dimensions_follow_the_display_rotation(monkeypatch, rotation, size):
+    process = Mock(
+        communicate=AsyncMock(
+            return_value=(
+                json.dumps(
+                    {
+                        "streams": [
+                            {
+                                "width": 1280,
+                                "height": 720,
+                                "side_data_list": [{"rotation": rotation}],
+                            }
+                        ]
+                    }
+                ).encode(),
+                b"",
+            )
+        )
+    )
+    monkeypatch.setattr(overlay.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    assert await overlay.dimensions("phone.mp4") == size
+
+
+@pytest.mark.anyio
+async def test_legacy_rotate_tags_are_applied_when_there_is_no_display_matrix(monkeypatch):
+    process = Mock(
+        communicate=AsyncMock(
+            return_value=(
+                json.dumps(
+                    {
+                        "streams": [
+                            {
+                                "width": 1280,
+                                "height": 720,
+                                "tags": {"rotate": "-90"},
+                            }
+                        ]
+                    }
+                ).encode(),
+                b"",
+            )
+        )
+    )
+    monkeypatch.setattr(overlay.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    assert await overlay.dimensions("phone.mp4") == (720, 1280)
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg/ffprobe are required for the real-video regression",
+)
+@pytest.mark.parametrize("span", [None, (0.0, 0.5)])
+async def test_phone_rotation_draws_boxes_on_the_displayed_pixels_for_video_and_excerpt(
+    monkeypatch, tmp_path, span
+):
+    landscape, rotated, rendered = (
+        tmp_path / name for name in ("coded.mp4", "phone.mp4", "out.mp4")
+    )
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=320x180:r=10",
+            "-t",
+            "1",
+            "-c:v",
+            "libx264",
+            str(landscape),
+        ],
+        check=True,
+    )
+    help_text = subprocess.check_output(
+        ["ffmpeg", "-hide_banner", "-h", "full"], stderr=subprocess.DEVNULL
+    ).decode()
+    rotation_input = ["-display_rotation:v:0", "-90"] if "-display_rotation" in help_text else []
+    rotation_output = [] if rotation_input else ["-metadata:s:v:0", "rotate=-90"]
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            *rotation_input,
+            "-i",
+            str(landscape),
+            "-c",
+            "copy",
+            *rotation_output,
+            str(rotated),
+        ],
+        check=True,
+    )
+
+    class Blob:
+        def download_to_filename(self, destination):
+            shutil.copyfile(rotated, destination)
+
+        def upload_from_filename(self, source, content_type):
+            shutil.copyfile(source, rendered)
+
+    storage = Mock()
+    storage.bucket.return_value.blob.return_value = Blob()
+    monkeypatch.setattr(overlay.storage, "Client", lambda **kwargs: storage)
+    monkeypatch.setenv("APP_PROJECT_ID", "test-project")
+    assert await overlay.dimensions(str(rotated)) == (180, 320)
+    uri = await overlay.render(
+        "gs://test-videos/uploads/phone",
+        [
+            track(
+                [
+                    box(0, x=0.25, y=0.4, w=0.25, h=0.2),
+                ]
+            )
+        ],
+        span,
+    )
+    assert uri == f"gs://test-videos/{'excerpt' if span else 'annotated'}/phone"
+    assert await overlay.dimensions(str(rendered)) == (180, 320)
+    pixels = subprocess.check_output(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(rendered),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ]
+    )
+    red = [
+        (i // 3 % 180, i // 3 // 180)
+        for i in range(0, len(pixels), 3)
+        if pixels[i] > 150 and pixels[i + 1] < 80 and pixels[i + 2] < 80
+    ]
+    assert red
+    x0, x1 = min(p[0] for p in red), max(p[0] for p in red)
+    y0, y1 = min(p[1] for p in red), max(p[1] for p in red)
+    assert 43 <= x0 <= 47 and 87 <= x1 <= 91
+    assert 126 <= y0 <= 130 and 189 <= y1 <= 193
